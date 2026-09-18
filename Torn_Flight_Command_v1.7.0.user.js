@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.2
+// @version      1.7.3
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.2';
+    const VERSION = 'v1.7.3';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -937,6 +937,123 @@
         return null;
     }
 
+    function visibleElement(element) {
+        if (!(element instanceof Element)) return false;
+        const style = getComputedStyle(element);
+        const box = element.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
+    }
+
+    function findNativeShopRow(item) {
+        const wanted = item.name.toLowerCase();
+        const candidates = document.querySelectorAll('li, article, [data-item], [data-item-id]');
+
+        for (const element of candidates) {
+            if (element.closest('#fc-panel, #fc-mexico-panel, [id^="fc-multi-country"], [id*="multi-country-intel"]')) continue;
+            const text = (element.innerText || '').replace(/\s+/g, ' ').trim();
+            if (!text || text.length > 1200 || !text.toLowerCase().includes(wanted)) continue;
+            if (!/\$\s*[\d,]+|sold\s*out|stock\s*[\d,]+/i.test(text)) continue;
+            return element;
+        }
+
+        return null;
+    }
+
+    function setNativeInputValue(input, amount) {
+        const prototype = input instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement.prototype
+            : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+        if (setter) setter.call(input, String(amount));
+        else input.value = String(amount);
+        input.dispatchEvent(new InputEvent('input', {
+            bubbles: true,
+            inputType: 'insertText',
+            data: String(amount)
+        }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    async function waitForValue(getValue, timeoutMs = 2500) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const value = getValue();
+            if (value) return value;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        return null;
+    }
+
+    function purchaseButtonWithin(context, itemName) {
+        if (!context) return null;
+        return [...context.querySelectorAll('button, [role="button"], input[type="submit"]')].find(button => {
+            if (!visibleElement(button) || button.disabled || button.closest('#fc-panel, #fc-mexico-panel')) return false;
+            const text = (button.innerText || button.value || button.getAttribute('aria-label') || '')
+                .replace(/\s+/g, ' ')
+                .trim();
+            if (!text || text.toLowerCase() === itemName.toLowerCase() || /buy\s+max/i.test(text)) return false;
+            return /^(?:buy|purchase)\b/i.test(text) || button.type === 'submit';
+        }) || null;
+    }
+
+    async function purchaseFromTornShop(item, amount) {
+        let row = findNativeShopRow(item);
+        if (!row) throw new Error('Open the Mexico shop page before buying.');
+
+        let input = [...row.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
+            .find(candidate => visibleElement(candidate));
+        let purchaseButton = purchaseButtonWithin(row, item.name);
+
+        if (!input || !purchaseButton) {
+            const itemButton = [...row.querySelectorAll('button, [role="button"]')].find(button => {
+                const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+                return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
+            });
+            itemButton?.click();
+
+            const controls = await waitForValue(() => {
+                row = findNativeShopRow(item) || row;
+                const foundInput = [...row.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
+                    .find(candidate => visibleElement(candidate));
+                const foundButton = purchaseButtonWithin(row, item.name);
+                return foundInput && foundButton ? { input: foundInput, button: foundButton } : null;
+            });
+            input = controls?.input || null;
+            purchaseButton = controls?.button || null;
+        }
+
+        if (!input || !purchaseButton) {
+            throw new Error('Torn purchase controls were not found. Expand the item and try again.');
+        }
+
+        setNativeInputValue(input, amount);
+        input.focus();
+        input.blur();
+        await new Promise(resolve => setTimeout(resolve, 100));
+        purchaseButton.click();
+
+        const confirmation = await waitForValue(() => {
+            const dialogs = [...document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')]
+                .filter(visibleElement);
+            for (const dialog of dialogs) {
+                const text = (dialog.innerText || '').replace(/\s+/g, ' ').trim();
+                if (!text || (!text.toLowerCase().includes(item.name.toLowerCase()) && !/are\s+you\s+sure/i.test(text))) continue;
+                const button = [...dialog.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
+                    if (!visibleElement(candidate) || candidate.disabled) return false;
+                    const label = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || '')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+                    return /^(?:yes|confirm|buy|purchase)(?:\s+(?:now|items?))?$/i.test(label);
+                });
+                if (button) return button;
+            }
+            return null;
+        }, 1200);
+
+        confirmation?.click();
+        return confirmation ? 'Purchase confirmed' : 'Purchase submitted';
+    }
+
     function readLiveListing(item) {
         const pageText = document.body?.innerText || '';
 
@@ -1451,10 +1568,38 @@
                 card.querySelector('.fc-total-profit').textContent = Number.isFinite(item.playerProfit)
                     ? money(amount * item.playerProfit)
                     : 'Live price pending';
+                return amount;
             };
 
             input.addEventListener('input', () => updateAmount(input.value));
-            maxButton.addEventListener('click', () => updateAmount(Math.min(item.quantity, travelCapacity.remaining)));
+            maxButton.addEventListener('click', async () => {
+                const amount = updateAmount(Math.min(item.quantity, travelCapacity.remaining));
+                if (!amount) return;
+
+                const originalText = maxButton.textContent;
+                maxButton.disabled = true;
+                maxButton.textContent = `BUYING ${amount}...`;
+
+                try {
+                    const result = await purchaseFromTornShop(item, amount);
+                    maxButton.textContent = result.toUpperCase();
+                    setTimeout(() => {
+                        publishDirectShopBridge();
+                        refreshMexicoFeed(true);
+                        mexicoRenderSignature = '';
+                        renderMexicoItems(true);
+                    }, 1200);
+                } catch (error) {
+                    maxButton.textContent = error?.message || 'PURCHASE FAILED';
+                    maxButton.disabled = false;
+                }
+
+                setTimeout(() => {
+                    if (!maxButton.isConnected) return;
+                    maxButton.textContent = originalText;
+                    maxButton.disabled = false;
+                }, 4000);
+            });
             profitButton.addEventListener('click', () => {
                 const panel = card.querySelector('.fc-profit-panel');
                 const expanded = panel.hidden;
