@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command - Weav3r Price Test
 // @namespace    torn.flight.command
-// @version      0.1.0
+// @version      0.1.1
 // @description  Tests the public TornW3B marketplace response for Jaguar Plushie without an API key.
 // @author       Aaron Mason
 // @match        https://www.torn.com/*
@@ -43,30 +43,12 @@
         return '';
     }
 
-    function requestWithPda() {
-        return new Promise((resolve, reject) => {
-            if (typeof window.PDA_httpGet !== 'function') {
-                reject(new Error('PDA_httpGet is unavailable'));
-                return;
-            }
-            let settled = false;
-            const finish = (value) => {
-                if (settled) return;
-                settled = true;
-                resolve(value);
-            };
-            const fail = (error) => {
-                if (settled) return;
-                settled = true;
-                reject(error instanceof Error ? error : new Error(String(error || 'PDA request failed')));
-            };
-            try {
-                const result = window.PDA_httpGet(ENDPOINT, finish, fail);
-                if (result && typeof result.then === 'function') result.then(finish).catch(fail);
-            } catch (error) {
-                fail(error);
-            }
-            window.setTimeout(() => fail(new Error('PDA request timed out after 15 seconds')), 15000);
+    async function requestWithPda() {
+        if (typeof window.PDA_httpGet !== 'function') {
+            throw new Error('PDA_httpGet is unavailable');
+        }
+        return window.PDA_httpGet(ENDPOINT, {
+            Accept: 'application/json'
         });
     }
 
@@ -176,7 +158,7 @@
                 `Generated: ${data.generated_at ? age(data.generated_at) : 'Unknown'}`
             ];
             report = JSON.stringify({
-                test: 'Flight Command Weav3r Price Test v0.1.0',
+                test: 'Flight Command Weav3r Price Test v0.1.1',
                 testedAt: new Date().toISOString(),
                 endpoint: ENDPOINT,
                 requestSource: source,
@@ -187,7 +169,7 @@
             copyButton.disabled = false;
         } catch (error) {
             report = JSON.stringify({
-                test: 'Flight Command Weav3r Price Test v0.1.0',
+                test: 'Flight Command Weav3r Price Test v0.1.1',
                 testedAt: new Date().toISOString(),
                 endpoint: ENDPOINT,
                 error: error.message
