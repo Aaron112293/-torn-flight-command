@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Torn Flight Command - Weav3r Price Test
 // @namespace    torn.flight.command
-// @version      0.1.1
+// @version      0.1.2
 // @description  Tests the public TornW3B marketplace response for Jaguar Plushie without an API key.
 // @author       Aaron Mason
+// @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_Weav3r_Test_v0.1.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_Weav3r_Test_v0.1.0.user.js
 // @match        https://www.torn.com/*
 // @connect      weav3r.dev
 // @grant        GM_xmlhttpRequest
@@ -158,7 +160,7 @@
                 `Generated: ${data.generated_at ? age(data.generated_at) : 'Unknown'}`
             ];
             report = JSON.stringify({
-                test: 'Flight Command Weav3r Price Test v0.1.1',
+                test: 'Flight Command Weav3r Price Test v0.1.2',
                 testedAt: new Date().toISOString(),
                 endpoint: ENDPOINT,
                 requestSource: source,
@@ -169,7 +171,7 @@
             copyButton.disabled = false;
         } catch (error) {
             report = JSON.stringify({
-                test: 'Flight Command Weav3r Price Test v0.1.1',
+                test: 'Flight Command Weav3r Price Test v0.1.2',
                 testedAt: new Date().toISOString(),
                 endpoint: ENDPOINT,
                 error: error.message
