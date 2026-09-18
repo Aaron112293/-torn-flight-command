@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.1
+// @version      1.7.2
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.1';
+    const VERSION = 'v1.7.2';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -880,6 +880,49 @@
         return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
 
+    function readTravelCapacity() {
+        const patterns = [
+            /(?:items?(?:\s+carried)?|carrying\s+capacity|travel\s+capacity|item\s+capacity)\s*:?\s*([\d,]+)\s*(?:\/|of)\s*([\d,]+)/i,
+            /([\d,]+)\s*(?:\/|of)\s*([\d,]+)\s*(?:items?|slots?)/i
+        ];
+        const candidates = [
+            ...document.querySelectorAll('[aria-label], [title], header, [class*="travel"], [class*="capacity"], [class*="item"]')
+        ];
+
+        for (const element of candidates) {
+            if (element.closest('#fc-panel, #fc-mexico-panel, [id^="fc-multi-country"], [id*="multi-country-intel"]')) continue;
+
+            const values = [
+                element.getAttribute?.('aria-label'),
+                element.getAttribute?.('title'),
+                element.innerText
+            ];
+
+            for (const rawValue of values) {
+                const text = String(rawValue || '').replace(/\s+/g, ' ').trim();
+                if (!text || text.length > 240) continue;
+
+                for (const pattern of patterns) {
+                    const match = text.match(pattern);
+                    if (!match) continue;
+
+                    const used = Number(match[1].replace(/,/g, ''));
+                    const total = Number(match[2].replace(/,/g, ''));
+                    if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0 || total > 1000 || used < 0 || used > total) continue;
+
+                    return {
+                        used,
+                        total,
+                        remaining: Math.max(0, total - used),
+                        sourceText: text.slice(0, 160)
+                    };
+                }
+            }
+        }
+
+        return null;
+    }
+
     function readLiveListing(item) {
         const pageText = document.body?.innerText || '';
 
@@ -1043,6 +1086,7 @@
         if (!content) return;
 
         const items = MEXICO_ITEMS.map(getCardData);
+        const travelCapacity = readTravelCapacity();
         const signature = JSON.stringify(items.map(item => [
             item.cost,
             item.quantity,
@@ -1055,7 +1099,9 @@
             highlightingEnabled,
             marketPriceLoading,
             marketPriceProgress.complete,
-            marketPriceError
+            marketPriceError,
+            travelCapacity?.used ?? null,
+            travelCapacity?.total ?? null
         ]));
         if (!force && signature === mexicoRenderSignature) return;
         mexicoRenderSignature = signature;
@@ -1092,13 +1138,22 @@
 
             const key = itemKey(item.name);
             const state = itemCardState.get(key) || { amount: 0, expanded: false };
+            const purchaseLimit = Number.isFinite(travelCapacity?.remaining) && Number.isFinite(item.quantity)
+                ? Math.min(travelCapacity.remaining, item.quantity)
+                : null;
+            const displayedAmount = Number.isFinite(purchaseLimit)
+                ? Math.min(state.amount, purchaseLimit)
+                : state.amount;
+            if (displayedAmount !== state.amount) {
+                itemCardState.set(key, { ...state, amount: displayedAmount });
+            }
             const isBest = Number.isFinite(bestProfit) && item[profitField] === bestProfit;
             const quantityLabel = item.soldOut
                 ? 'SOLD OUT'
                 : (Number.isFinite(item.quantity) ? item.quantity.toLocaleString('en-US') : 'Stock updates in Mexico');
-            const totalCost = state.amount * item.cost;
+            const totalCost = displayedAmount * item.cost;
             const totalMarketProfit = Number.isFinite(item.playerProfit)
-                ? state.amount * item.playerProfit
+                ? displayedAmount * item.playerProfit
                 : null;
 
             cards += `
@@ -1112,12 +1167,12 @@
                     <div class="fc-catalog-note">Resale estimate: ${Number.isFinite(item.resalePrice) ? money(item.resalePrice) : 'Loading live price'}${item.priceSource ? ` · ${escapeHtml(item.priceSource)}` : ''}</div>
                     <div class="fc-buy-row">
                         <label class="fc-buy-label">BUY AMOUNT</label>
-                        <input class="fc-buy-input" type="number" inputmode="numeric" min="0" ${Number.isFinite(item.quantity) ? `max="${item.quantity}"` : ''} value="${state.amount}">
-                        <button class="fc-button fc-buy-max" type="button" ${item.soldOut || !Number.isFinite(item.quantity) ? 'disabled' : ''}>BUY MAX</button>
+                        <input class="fc-buy-input" type="number" inputmode="numeric" min="0" ${Number.isFinite(purchaseLimit) ? `max="${purchaseLimit}"` : ''} value="${displayedAmount}">
+                        <button class="fc-button fc-buy-max" type="button" ${item.soldOut || !Number.isFinite(purchaseLimit) ? 'disabled' : ''}>BUY MAX${Number.isFinite(purchaseLimit) ? ` (${purchaseLimit})` : ''}</button>
                     </div>
                     <div class="fc-card-summary">
                         <span>Total cost: <strong class="fc-total-cost">${money(totalCost)}</strong></span>
-                        <span>Stock remaining: <strong class="fc-stock-remaining">${Number.isFinite(item.quantity) ? Math.max(0, item.quantity - state.amount).toLocaleString('en-US') : '-'}</strong></span>
+                        <span>Stock remaining: <strong class="fc-stock-remaining">${Number.isFinite(item.quantity) ? Math.max(0, item.quantity - displayedAmount).toLocaleString('en-US') : '-'}</strong></span>
                     </div>
                     <button class="fc-button fc-profit-toggle" type="button">${state.expanded ? 'HIDE PROFIT INFO ^' : 'VIEW PROFIT INFO v'}</button>
                     <div class="fc-profit-panel" ${state.expanded ? '' : 'hidden'}>
@@ -1156,12 +1211,12 @@
                 <button class="fc-mode-choice ${sortMode === 'quantity-low' ? 'active' : ''}" data-sort-mode="quantity-low" type="button">LOWEST QUANTITY FIRST</button>
             </div>
             <button class="fc-sold-out-toggle ${hideSoldOut ? 'active' : ''}" data-toggle-sold-out type="button">HIDE ALL SOLD OUT ITEMS: ${hideSoldOut ? 'ON' : 'OFF'}</button>
-            <div class="fc-catalog-note">Complete Mexico catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}</div>
+            <div class="fc-catalog-note">Complete Mexico catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}<br>${travelCapacity ? `Travel capacity: ${travelCapacity.used}/${travelCapacity.total} used · ${travelCapacity.remaining} slots remaining` : 'Travel capacity: waiting for Torn capacity display'}</div>
             <button id="fc-refresh-prices" class="fc-button" type="button" ${marketPriceLoading ? 'disabled' : ''}>REFRESH MARKET PRICES</button>
             <button id="fc-copy-diagnostics" class="fc-button" type="button">COPY DIAGNOSTIC DATA</button>
             ${cards}`;
 
-        bindMexicoCardEvents(sortedItems);
+        bindMexicoCardEvents(sortedItems, travelCapacity);
     }
 
     function diagnosticTextForItem(item) {
@@ -1242,6 +1297,7 @@
                 travelingIndicatorVisible: globalTravelIndicatorIsVisible(pageText),
                 detected: flight
             },
+            travelCapacity: readTravelCapacity(),
             foreignStockFeed: {
                 url: FEED_URL,
                 status: feedStatusText(),
@@ -1321,7 +1377,7 @@
         }, 4000);
     }
 
-    function bindMexicoCardEvents(items) {
+    function bindMexicoCardEvents(items, travelCapacity) {
         const content = document.getElementById('fc-mexico-content');
         if (!content) return;
 
@@ -1367,7 +1423,10 @@
 
             const updateAmount = rawAmount => {
                 const available = Number.isFinite(item.quantity) ? item.quantity : Number.MAX_SAFE_INTEGER;
-                const amount = Math.max(0, Math.min(available, Math.floor(Number(rawAmount) || 0)));
+                const remainingSlots = Number.isFinite(travelCapacity?.remaining)
+                    ? travelCapacity.remaining
+                    : 0;
+                const amount = Math.max(0, Math.min(available, remainingSlots, Math.floor(Number(rawAmount) || 0)));
                 const oldState = itemCardState.get(key) || {};
                 itemCardState.set(key, { ...oldState, amount });
                 input.value = amount;
@@ -1381,7 +1440,7 @@
             };
 
             input.addEventListener('input', () => updateAmount(input.value));
-            maxButton.addEventListener('click', () => updateAmount(item.quantity));
+            maxButton.addEventListener('click', () => updateAmount(Math.min(item.quantity, travelCapacity.remaining)));
             profitButton.addEventListener('click', () => {
                 const panel = card.querySelector('.fc-profit-panel');
                 const expanded = panel.hidden;
