@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.0
+// @version      1.7.1
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.0';
+    const VERSION = 'v1.7.1';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -865,6 +865,17 @@
             : '-';
     }
 
+    function parseShopMoney(numberText, suffixText = '') {
+        const base = Number(String(numberText).replace(/,/g, ''));
+        if (!Number.isFinite(base)) return null;
+        const multiplier = {
+            K: 1_000,
+            M: 1_000_000,
+            B: 1_000_000_000
+        }[String(suffixText).toUpperCase()] || 1;
+        return Math.round(base * multiplier);
+    }
+
     function itemKey(name) {
         return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     }
@@ -887,7 +898,7 @@
 
             const soldOut = /sold\s*out|out\s*of\s*stock/i.test(text);
             const quantityMatch = text.match(/(?:quantity|stock|available)\s*:?\s*([\d,]+)/i);
-            const priceMatch = text.match(/\$\s*([\d,]+(?:\.\d{1,2})?)/);
+            const priceMatch = text.match(/\$\s*([\d,]+(?:\.\d{1,2})?)\s*([KMB])?/i);
 
             // A real shop row must contain its own price and either a stock
             // value or an explicit sold-out label.
@@ -896,7 +907,7 @@
             return {
                 soldOut,
                 quantity: soldOut ? 0 : (quantityMatch ? Number(quantityMatch[1].replace(/,/g, '')) : null),
-                cost: priceMatch ? Number(priceMatch[1].replace(/,/g, '')) : null
+                cost: priceMatch ? parseShopMoney(priceMatch[1], priceMatch[2]) : null
             };
         }
 
