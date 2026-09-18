@@ -21,7 +21,11 @@
     let mexicoRenderSignature = '';
     let highlightingEnabled = localStorage.getItem('fc-highlighting') !== 'off';
     let profitMode = localStorage.getItem('fc-profit-mode') === 'npc' ? 'npc' : 'market';
-    let profitSort = localStorage.getItem('fc-profit-sort') === 'low' ? 'low' : 'high';
+    const savedSortMode = localStorage.getItem('fc-sort-mode');
+    let sortMode = ['price-high', 'price-low', 'profit-high', 'profit-low', 'quantity-high', 'quantity-low'].includes(savedSortMode)
+        ? savedSortMode
+        : 'profit-high';
+    let hideSoldOut = localStorage.getItem('fc-hide-sold-out') === 'true';
     let mexicoFeed = loadCachedMexicoFeed();
     let feedLoading = false;
     let feedError = '';
@@ -585,7 +589,7 @@
             }
 
             .fc-profit-mode,
-            .fc-profit-sort {
+            .fc-sort-mode {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
                 gap: 5px;
@@ -609,6 +613,24 @@
                 border-color: #49759f;
                 background: #294764;
                 color: #e4f2ff;
+            }
+
+            .fc-sold-out-toggle {
+                width: 100%;
+                margin-bottom: 10px;
+                padding: 10px 8px;
+                border: 1px solid #4f5964;
+                border-radius: 8px;
+                background: rgba(0,0,0,.25);
+                color: #b8c2cc;
+                font-size: 11px;
+                font-weight: 900;
+            }
+
+            .fc-sold-out-toggle.active {
+                border-color: #9a6940;
+                background: #654329;
+                color: #fff0dc;
             }
 
             #fc-footer {
@@ -835,20 +857,25 @@
         if (!content) return;
 
         const items = MEXICO_ITEMS.map(getCardData);
-        const signature = JSON.stringify(items.map(item => [item.cost, item.quantity, item.soldOut, profitMode, profitSort, highlightingEnabled]));
+        const signature = JSON.stringify(items.map(item => [item.cost, item.quantity, item.soldOut, profitMode, sortMode, hideSoldOut, highlightingEnabled]));
         if (!force && signature === mexicoRenderSignature) return;
         mexicoRenderSignature = signature;
 
         const profitField = profitMode === 'npc' ? 'npcProfit' : 'playerProfit';
-        const sortedItems = [...items].sort((left, right) => {
-            const leftAvailable = !left.soldOut && Number.isFinite(left[profitField]);
-            const rightAvailable = !right.soldOut && Number.isFinite(right[profitField]);
+        const sortByProfit = sortMode.startsWith('profit-');
+        const sortByQuantity = sortMode.startsWith('quantity-');
+        const sortField = sortByProfit ? profitField : (sortByQuantity ? 'quantity' : 'cost');
+        const descending = sortMode.endsWith('-high');
+        const visibleItems = hideSoldOut ? items.filter(item => !item.soldOut) : items;
+        const sortedItems = [...visibleItems].sort((left, right) => {
+            const leftComparable = Number.isFinite(left[sortField]) && (!sortByProfit || !left.soldOut);
+            const rightComparable = Number.isFinite(right[sortField]) && (!sortByProfit || !right.soldOut);
 
-            if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
-            if (!leftAvailable) return 0;
+            if (leftComparable !== rightComparable) return leftComparable ? -1 : 1;
+            if (!leftComparable) return 0;
 
-            const difference = left[profitField] - right[profitField];
-            return profitSort === 'low' ? difference : -difference;
+            const difference = left[sortField] - right[sortField];
+            return descending ? -difference : difference;
         });
         const profitable = items.filter(item => !item.soldOut && Number.isFinite(item[profitField]));
         const bestProfit = profitable.length
@@ -918,10 +945,15 @@
                 <button class="fc-mode-choice ${profitMode === 'npc' ? 'active' : ''}" data-profit-mode="npc" type="button">NPC PROFIT</button>
                 <button class="fc-mode-choice ${profitMode === 'market' ? 'active' : ''}" data-profit-mode="market" type="button">PLAYER MARKET</button>
             </div>
-            <div class="fc-profit-sort" aria-label="Profit sorting order">
-                <button class="fc-mode-choice ${profitSort === 'high' ? 'active' : ''}" data-profit-sort="high" type="button">HIGHEST PROFIT FIRST</button>
-                <button class="fc-mode-choice ${profitSort === 'low' ? 'active' : ''}" data-profit-sort="low" type="button">LOWEST PROFIT FIRST</button>
+            <div class="fc-sort-mode" aria-label="Item sorting order">
+                <button class="fc-mode-choice ${sortMode === 'price-high' ? 'active' : ''}" data-sort-mode="price-high" type="button">HIGHEST PRICE FIRST</button>
+                <button class="fc-mode-choice ${sortMode === 'price-low' ? 'active' : ''}" data-sort-mode="price-low" type="button">LOWEST PRICE FIRST</button>
+                <button class="fc-mode-choice ${sortMode === 'profit-high' ? 'active' : ''}" data-sort-mode="profit-high" type="button">HIGHEST PROFIT FIRST</button>
+                <button class="fc-mode-choice ${sortMode === 'profit-low' ? 'active' : ''}" data-sort-mode="profit-low" type="button">LOWEST PROFIT FIRST</button>
+                <button class="fc-mode-choice ${sortMode === 'quantity-high' ? 'active' : ''}" data-sort-mode="quantity-high" type="button">HIGHEST QUANTITY FIRST</button>
+                <button class="fc-mode-choice ${sortMode === 'quantity-low' ? 'active' : ''}" data-sort-mode="quantity-low" type="button">LOWEST QUANTITY FIRST</button>
             </div>
+            <button class="fc-sold-out-toggle ${hideSoldOut ? 'active' : ''}" data-toggle-sold-out type="button">HIDE ALL SOLD OUT ITEMS: ${hideSoldOut ? 'ON' : 'OFF'}</button>
             <div class="fc-catalog-note">Complete Mexico catalog - sold-out items stay visible<br>${escapeHtml(feedStatusText())}</div>
             <button id="fc-copy-diagnostics" class="fc-button" type="button">COPY DIAGNOSTIC DATA</button>
             ${cards}`;
@@ -1091,13 +1123,20 @@
             });
         });
 
-        content.querySelectorAll('[data-profit-sort]').forEach(button => {
+        content.querySelectorAll('[data-sort-mode]').forEach(button => {
             button.addEventListener('click', () => {
-                profitSort = button.dataset.profitSort;
-                localStorage.setItem('fc-profit-sort', profitSort);
+                sortMode = button.dataset.sortMode;
+                localStorage.setItem('fc-sort-mode', sortMode);
                 mexicoRenderSignature = '';
                 renderMexicoItems(true);
             });
+        });
+
+        content.querySelector('[data-toggle-sold-out]')?.addEventListener('click', () => {
+            hideSoldOut = !hideSoldOut;
+            localStorage.setItem('fc-hide-sold-out', String(hideSoldOut));
+            mexicoRenderSignature = '';
+            renderMexicoItems(true);
         });
 
         content.querySelectorAll('.fc-item-card').forEach(card => {
