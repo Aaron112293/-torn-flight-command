@@ -1,21 +1,28 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.6.0
-// @description  Flight Command Mexico cards with profit sorting, safer foreign-stock feed, and direct-shop bridge
+// @version      1.7.0
+// @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
+// @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @match        https://www.torn.com/*
+// @connect      weav3r.dev
 // @grant        none
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const VERSION = 'v1.6.0';
+    const VERSION = 'v1.7.0';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
+    const PRICE_API_BASE = 'https://weav3r.dev/api/marketplace/';
+    const PRICE_CACHE_KEY = 'fc-weav3r-market-price-cache-v1';
     const LIVE_BRIDGE_KEY = 'flightCommandLiveShopBridgeV1';
     const FEED_REFRESH_MS = 30000;
+    const PRICE_REFRESH_MS = 15 * 60 * 1000;
+    const PRICE_FORCE_COOLDOWN_MS = 60 * 1000;
 
     const itemCardState = new Map();
     let mexicoRenderSignature = '';
@@ -30,6 +37,11 @@
     let feedLoading = false;
     let feedError = '';
     let lastFeedRequest = 0;
+    let marketPrices = loadCachedMarketPrices();
+    let marketPriceLoading = false;
+    let marketPriceError = '';
+    let marketPriceProgress = { complete: 0, total: 0 };
+    let lastMarketPriceBatch = 0;
 
     const CITY_TO_COUNTRY = {
         'ciudad juarez': 'Mexico',
@@ -102,6 +114,136 @@
         return mexicoFeed?.stocks?.find(item => item.name === name) || null;
     }
 
+    function loadCachedMarketPrices() {
+        try {
+            const cached = JSON.parse(localStorage.getItem(PRICE_CACHE_KEY) || '{}');
+            return cached && typeof cached === 'object' ? cached : {};
+        } catch (error) {
+            return {};
+        }
+    }
+
+    function saveMarketPrices() {
+        try {
+            localStorage.setItem(PRICE_CACHE_KEY, JSON.stringify(marketPrices));
+        } catch (error) {
+            // Current in-memory prices remain usable if storage is unavailable.
+        }
+    }
+
+    function marketPriceById(id) {
+        return Number.isFinite(Number(id)) ? marketPrices[String(id)] || null : null;
+    }
+
+    function responseText(response) {
+        if (typeof response === 'string') return response;
+        return [response?.responseText, response?.response, response?.body]
+            .find(value => typeof value === 'string') || '';
+    }
+
+    async function requestMarketPriceJson(itemId) {
+        const url = `${PRICE_API_BASE}${itemId}?limit=5`;
+        if (typeof PDA_httpGet === 'function') {
+            const response = await PDA_httpGet(url, { Accept: 'application/json' });
+            const text = responseText(response);
+            if (!text) throw new Error('Weav3r returned no response text.');
+            return JSON.parse(text);
+        }
+
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+            credentials: 'omit'
+        });
+        if (!response.ok) throw new Error(`Weav3r request failed (${response.status}).`);
+        return response.json();
+    }
+
+    function normalizeMarketPrice(data) {
+        const listings = Array.isArray(data?.listings)
+            ? data.listings
+                .map(listing => ({
+                    price: Number(listing?.price),
+                    quantity: Number(listing?.quantity),
+                    updated: Number(listing?.last_checked ?? listing?.content_updated)
+                }))
+                .filter(listing => Number.isFinite(listing.price) && listing.price >= 0)
+                .sort((left, right) => left.price - right.price)
+            : [];
+        const lowest = listings[0] || null;
+        const marketPrice = Number(data?.market_price);
+        const bazaarAverage = Number(data?.bazaar_average);
+        const generatedAt = Number(data?.generated_at);
+
+        return {
+            itemId: Number(data?.item_id),
+            itemName: String(data?.item_name || ''),
+            lowestListingPrice: lowest?.price ?? null,
+            lowestListingQuantity: Number.isFinite(lowest?.quantity) ? lowest.quantity : null,
+            lowestListingUpdated: Number.isFinite(lowest?.updated) ? lowest.updated : null,
+            marketPrice: Number.isFinite(marketPrice) ? marketPrice : null,
+            bazaarAverage: Number.isFinite(bazaarAverage) ? bazaarAverage : null,
+            generatedAt: Number.isFinite(generatedAt) ? generatedAt : null,
+            receivedAt: Date.now()
+        };
+    }
+
+    async function refreshMarketPrices(force = false) {
+        if (marketPriceLoading || !Array.isArray(mexicoFeed?.stocks)) return;
+        if (force && Date.now() - lastMarketPriceBatch < PRICE_FORCE_COOLDOWN_MS) {
+            marketPriceError = 'Price refresh is limited to once per minute.';
+            mexicoRenderSignature = '';
+            renderMexicoItems(true);
+            return;
+        }
+
+        const available = MEXICO_ITEMS
+            .map(item => feedItemByName(item.name))
+            .filter(item => Number.isFinite(item?.id) && Number(item.quantity) > 0);
+        const targets = available.filter(item => {
+            const cached = marketPriceById(item.id);
+            return force || !cached?.receivedAt || Date.now() - cached.receivedAt >= PRICE_REFRESH_MS;
+        });
+        if (!targets.length) return;
+
+        marketPriceLoading = true;
+        marketPriceError = '';
+        marketPriceProgress = { complete: 0, total: targets.length };
+        lastMarketPriceBatch = Date.now();
+        let failures = 0;
+        mexicoRenderSignature = '';
+        renderMexicoItems(true);
+
+        let cursor = 0;
+        const worker = async () => {
+            while (cursor < targets.length) {
+                const target = targets[cursor++];
+                try {
+                    const data = await requestMarketPriceJson(target.id);
+                    const normalized = normalizeMarketPrice(data);
+                    if (!Number.isFinite(normalized.itemId)) throw new Error('Missing item ID.');
+                    marketPrices[String(target.id)] = normalized;
+                    saveMarketPrices();
+                } catch (error) {
+                    failures += 1;
+                }
+                marketPriceProgress.complete += 1;
+                mexicoRenderSignature = '';
+                renderMexicoItems(true);
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        };
+
+        await Promise.all([worker(), worker()]);
+        marketPriceLoading = false;
+        marketPriceError = failures
+            ? `${failures} of ${targets.length} live price requests failed; cached prices retained.`
+            : '';
+        mexicoRenderSignature = '';
+        renderMexicoItems(true);
+    }
+
     async function requestFeedJson() {
         if (typeof PDA_httpGet === 'function') {
             const response = await PDA_httpGet(FEED_URL, {
@@ -166,6 +308,7 @@
             saveMexicoFeed(mexicoFeed);
             mexicoRenderSignature = '';
             renderMexicoItems(true);
+            void refreshMarketPrices();
         } catch (error) {
             feedError = error?.message || String(error);
             mexicoRenderSignature = '';
@@ -812,14 +955,18 @@
     function getCardData(item) {
         const live = readLiveListing(item);
         const feed = feedItemByName(item.name);
+        const priceData = marketPriceById(feed?.id ?? item.id);
         const feedCost = Number.isFinite(feed?.cost) ? feed.cost : null;
         const feedQuantity = Number.isFinite(feed?.quantity) ? feed.quantity : null;
         const cost = live?.cost ?? feedCost ?? item.cost ?? item.minCost;
         const quantity = live?.quantity ?? feedQuantity;
         const soldOut = live?.soldOut === true || quantity === 0;
-        // Player Market and NPC selling prices are deliberately left unset until
-        // their live price sources are connected. This prevents false highlights.
-        const playerProfit = null;
+        const resalePrice = Number.isFinite(priceData?.lowestListingPrice)
+            ? priceData.lowestListingPrice
+            : (Number.isFinite(priceData?.marketPrice) ? priceData.marketPrice : null);
+        const playerProfit = Number.isFinite(resalePrice) && Number.isFinite(cost)
+            ? resalePrice - cost
+            : null;
         const npcProfit = Number.isFinite(item.npcSale) && Number.isFinite(cost)
             ? item.npcSale - cost
             : null;
@@ -830,8 +977,13 @@
             cost,
             quantity,
             soldOut,
+            resalePrice,
             playerProfit,
             npcProfit,
+            marketPriceData: priceData,
+            priceSource: Number.isFinite(priceData?.lowestListingPrice)
+                ? 'WEAV3R LOWEST LISTING'
+                : (Number.isFinite(priceData?.marketPrice) ? 'WEAV3R MARKET VALUE' : null),
             stockSource: live ? 'DIRECT TORN SHOP' : (feed ? 'FOREIGN STOCK FEED' : 'CATALOG FALLBACK')
         };
     }
@@ -839,6 +991,16 @@
     function profitPercent(profit, cost) {
         if (!Number.isFinite(profit) || !Number.isFinite(cost) || cost <= 0) return '-';
         return `${((profit / cost) * 100).toFixed(1)}%`;
+    }
+
+    function relativeTime(unixSeconds) {
+        const timestamp = Number(unixSeconds);
+        if (!Number.isFinite(timestamp) || timestamp <= 0) return '-';
+        const seconds = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+        if (seconds < 60) return `${seconds}s ago`;
+        if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+        if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+        return `${Math.floor(seconds / 86400)}d ago`;
     }
 
     function feedStatusText() {
@@ -852,12 +1014,38 @@
         return 'Stock feed: waiting for first refresh';
     }
 
+    function priceStatusText() {
+        if (marketPriceLoading) {
+            return `Market prices: loading ${marketPriceProgress.complete}/${marketPriceProgress.total}`;
+        }
+        const received = Object.values(marketPrices)
+            .map(price => Number(price?.receivedAt))
+            .filter(Number.isFinite);
+        if (marketPriceError) return `Market prices: ${marketPriceError}`;
+        if (!received.length) return 'Market prices: waiting for first refresh';
+        const ageSeconds = Math.max(0, Math.floor((Date.now() - Math.max(...received)) / 1000));
+        return `Market prices: Weav3r, refreshed ${ageSeconds}s ago`;
+    }
+
     function renderMexicoItems(force = false) {
         const content = document.getElementById('fc-mexico-content');
         if (!content) return;
 
         const items = MEXICO_ITEMS.map(getCardData);
-        const signature = JSON.stringify(items.map(item => [item.cost, item.quantity, item.soldOut, profitMode, sortMode, hideSoldOut, highlightingEnabled]));
+        const signature = JSON.stringify(items.map(item => [
+            item.cost,
+            item.quantity,
+            item.soldOut,
+            item.resalePrice,
+            item.playerProfit,
+            profitMode,
+            sortMode,
+            hideSoldOut,
+            highlightingEnabled,
+            marketPriceLoading,
+            marketPriceProgress.complete,
+            marketPriceError
+        ]));
         if (!force && signature === mexicoRenderSignature) return;
         mexicoRenderSignature = signature;
 
@@ -910,6 +1098,7 @@
                     </div>
                     <div class="fc-item-cost">Cost abroad: ${money(item.cost)}${item.maxCost && item.stockSource === 'CATALOG FALLBACK' ? `-${money(item.maxCost)}` : ''}</div>
                     <div class="fc-catalog-note">Source: ${escapeHtml(item.stockSource)}</div>
+                    <div class="fc-catalog-note">Resale estimate: ${Number.isFinite(item.resalePrice) ? money(item.resalePrice) : 'Loading live price'}${item.priceSource ? ` · ${escapeHtml(item.priceSource)}` : ''}</div>
                     <div class="fc-buy-row">
                         <label class="fc-buy-label">BUY AMOUNT</label>
                         <input class="fc-buy-input" type="number" inputmode="numeric" min="0" ${Number.isFinite(item.quantity) ? `max="${item.quantity}"` : ''} value="${state.amount}">
@@ -930,9 +1119,11 @@
                         </div>
                         <div class="fc-profit-section">
                             <div class="fc-profit-title">PLAYER MARKET PROFIT</div>
+                            <div>Estimated resale: <strong>${Number.isFinite(item.resalePrice) ? money(item.resalePrice) : 'Live price pending'}</strong></div>
                             <div>Per item: <strong>${Number.isFinite(item.playerProfit) ? money(item.playerProfit) : 'Live price pending'}</strong></div>
                             <div>Profit range: <strong>-</strong></div>
                             <div>Profit: <strong>${profitPercent(item.playerProfit, item.cost)}</strong></div>
+                            <div>Price checked: <strong>${item.marketPriceData?.lowestListingUpdated ? relativeTime(item.marketPriceData.lowestListingUpdated) : '-'}</strong></div>
                             <div>Selected total profit: <strong class="fc-total-profit">${money(totalMarketProfit)}</strong></div>
                         </div>
                     </div>
@@ -954,7 +1145,8 @@
                 <button class="fc-mode-choice ${sortMode === 'quantity-low' ? 'active' : ''}" data-sort-mode="quantity-low" type="button">LOWEST QUANTITY FIRST</button>
             </div>
             <button class="fc-sold-out-toggle ${hideSoldOut ? 'active' : ''}" data-toggle-sold-out type="button">HIDE ALL SOLD OUT ITEMS: ${hideSoldOut ? 'ON' : 'OFF'}</button>
-            <div class="fc-catalog-note">Complete Mexico catalog - sold-out items stay visible<br>${escapeHtml(feedStatusText())}</div>
+            <div class="fc-catalog-note">Complete Mexico catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}</div>
+            <button id="fc-refresh-prices" class="fc-button" type="button" ${marketPriceLoading ? 'disabled' : ''}>REFRESH MARKET PRICES</button>
             <button id="fc-copy-diagnostics" class="fc-button" type="button">COPY DIAGNOSTIC DATA</button>
             ${cards}`;
 
@@ -1008,6 +1200,9 @@
                 detectedCost: calculated.cost ?? null,
                 detectedQuantity: calculated.quantity,
                 detectedSoldOut: calculated.soldOut,
+                estimatedResalePrice: calculated.resalePrice,
+                marketPriceSource: calculated.priceSource,
+                weav3rPriceData: calculated.marketPriceData,
                 calculatedPlayerProfit: calculated.playerProfit,
                 calculatedNpcProfit: calculated.npcProfit,
                 npcStore: calculated.npcStore ?? null,
@@ -1043,6 +1238,14 @@
                 receivedAt: mexicoFeed?.receivedAt ?? null,
                 itemCount: mexicoFeed?.stocks?.length ?? 0,
                 lastError: feedError || null
+            },
+            playerMarketPrices: {
+                provider: 'TornW3B / Weav3r',
+                apiBase: PRICE_API_BASE,
+                status: priceStatusText(),
+                cachedItemCount: Object.keys(marketPrices).length,
+                refreshIntervalMinutes: PRICE_REFRESH_MS / 60000,
+                lastError: marketPriceError || null
             },
             liveBridge: (() => {
                 try {
@@ -1114,6 +1317,9 @@
         const diagnosticButton = content.querySelector('#fc-copy-diagnostics');
         diagnosticButton?.addEventListener('click', () => copyDiagnosticData(diagnosticButton));
 
+        const refreshPricesButton = content.querySelector('#fc-refresh-prices');
+        refreshPricesButton?.addEventListener('click', () => void refreshMarketPrices(true));
+
         content.querySelectorAll('[data-profit-mode]').forEach(button => {
             button.addEventListener('click', () => {
                 profitMode = button.dataset.profitMode;
@@ -1181,6 +1387,7 @@
         const panel = document.getElementById('fc-mexico-panel');
         if (panel) panel.style.display = 'block';
         refreshMexicoFeed();
+        void refreshMarketPrices();
         renderMexicoItems(true);
     }
 
@@ -1314,6 +1521,10 @@
         refreshMexicoFeed();
         publishDirectShopBridge();
     }, FEED_REFRESH_MS);
+
+    setInterval(() => {
+        void refreshMarketPrices();
+    }, PRICE_REFRESH_MS);
 
     startObserver();
     refreshMexicoFeed(true);
