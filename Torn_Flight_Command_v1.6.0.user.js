@@ -885,6 +885,33 @@
             /(?:items?(?:\s+carried)?|carrying\s+capacity|travel\s+capacity|item\s+capacity)\s*:?\s*([\d,]+)\s*(?:\/|of)\s*([\d,]+)/i,
             /([\d,]+)\s*(?:\/|of)\s*([\d,]+)\s*(?:items?|slots?)/i
         ];
+        const parseCapacity = text => {
+            for (const pattern of patterns) {
+                const match = text.match(pattern);
+                if (!match) continue;
+
+                const used = Number(match[1].replace(/,/g, ''));
+                const total = Number(match[2].replace(/,/g, ''));
+                if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0 || total > 1000 || used < 0 || used > total) continue;
+
+                return {
+                    used,
+                    total,
+                    remaining: Math.max(0, total - used),
+                    sourceText: match[0].slice(0, 160)
+                };
+            }
+            return null;
+        };
+
+        let pageText = document.body?.innerText || '';
+        document.querySelectorAll('#fc-panel, #fc-mexico-panel, [id^="fc-multi-country"], [id*="multi-country-intel"]').forEach(panel => {
+            const panelText = panel.innerText || '';
+            if (panelText) pageText = pageText.replace(panelText, '');
+        });
+        const pageCapacity = parseCapacity(pageText.replace(/\s+/g, ' '));
+        if (pageCapacity) return pageCapacity;
+
         const candidates = [
             ...document.querySelectorAll('[aria-label], [title], header, [class*="travel"], [class*="capacity"], [class*="item"]')
         ];
@@ -902,21 +929,8 @@
                 const text = String(rawValue || '').replace(/\s+/g, ' ').trim();
                 if (!text || text.length > 240) continue;
 
-                for (const pattern of patterns) {
-                    const match = text.match(pattern);
-                    if (!match) continue;
-
-                    const used = Number(match[1].replace(/,/g, ''));
-                    const total = Number(match[2].replace(/,/g, ''));
-                    if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0 || total > 1000 || used < 0 || used > total) continue;
-
-                    return {
-                        used,
-                        total,
-                        remaining: Math.max(0, total - used),
-                        sourceText: text.slice(0, 160)
-                    };
-                }
+                const capacity = parseCapacity(text);
+                if (capacity) return capacity;
             }
         }
 
