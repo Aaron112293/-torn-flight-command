@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.1
+// @version      1.8.2
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.1';
+    const VERSION = 'v1.8.2';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1035,19 +1035,32 @@
 
     function purchaseButtonWithin(context, itemName) {
         if (!context) return null;
-        return [...context.querySelectorAll('button, [role="button"], input[type="submit"]')].find(button => {
+        const buttons = [...context.querySelectorAll('button, [role="button"], input[type="submit"]')];
+        return buttons.find(button => {
             if (!visibleElement(button) || button.disabled || button.closest('#fc-panel, #fc-mexico-panel')) return false;
             const text = (button.innerText || button.value || '').replace(/\s+/g, ' ').trim();
+            const className = typeof button.className === 'string' ? button.className : '';
             const hint = [
                 text,
-                typeof button.className === 'string' ? button.className : '',
+                className,
                 button.getAttribute('aria-label'),
                 button.getAttribute('title'),
                 button.getAttribute('data-testid')
             ].filter(Boolean).join(' ');
             if (text.toLowerCase() === itemName.toLowerCase() || /buy\s+max/i.test(hint)) return false;
-            return /\b(?:buy|purchase|cart|basket)\b/i.test(hint) || button.type === 'submit';
+            if (/buyIconButton___/.test(className)) return false;
+            return /^(?:buy|purchase)(?:\s+(?:now|items?))?$/i.test(text);
         }) || null;
+    }
+
+    function shopBuyIcon(row) {
+        if (!row) return null;
+        return [...row.querySelectorAll('button')].find(button =>
+            visibleElement(button)
+            && !button.disabled
+            && typeof button.className === 'string'
+            && /buyIconButton___/.test(button.className)
+        ) || null;
     }
 
     function purchaseControlsFor(item, row) {
@@ -1098,10 +1111,6 @@
             rowControls: snapshotControls(row)
         });
 
-        const itemButton = [...row.querySelectorAll('button, [role="button"]')].find(button => {
-            const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-            return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
-        });
         const rowIsExpanded = shopRowIsExpanded(row);
 
         // Torn keeps old quantity inputs mounted after a completed purchase.
@@ -1109,9 +1118,22 @@
         // cannot submit through the stale input left by the previous purchase.
         let controls = rowIsExpanded ? purchaseControlsFor(item, row) : null;
         if (!controls) {
-            itemButton?.click();
-            recordPurchaseAttempt(item, amount, itemButton ? 'ITEM_EXPAND_CLICKED' : 'ITEM_EXPAND_CONTROL_NOT_FOUND', null, {
+            const itemInfoClose = [...row.querySelectorAll('button')].find(button =>
+                visibleElement(button)
+                && (button.getAttribute('data-testid') === 'close-x-button'
+                    || /close item info/i.test(button.getAttribute('aria-label') || ''))
+            );
+            if (itemInfoClose) {
+                itemInfoClose.click();
+                await new Promise(resolve => setTimeout(resolve, 150));
+                row = findNativeShopRow(item) || row;
+            }
+
+            const buyIcon = shopBuyIcon(row);
+            buyIcon?.click();
+            recordPurchaseAttempt(item, amount, buyIcon ? 'PURCHASE_EXPAND_CLICKED' : 'PURCHASE_EXPAND_CONTROL_NOT_FOUND', null, {
                 rowWasExpanded: rowIsExpanded,
+                closedItemInfo: Boolean(itemInfoClose),
                 rowControls: snapshotControls(row)
             });
 
@@ -1155,7 +1177,7 @@
             controlsReacquired: Boolean(refreshedControls)
         });
 
-        const confirmation = await waitForValue(() => {
+        const finalConfirmation = await waitForValue(() => {
             row = findNativeShopRow(item) || row;
             const contexts = [
                 row,
@@ -1165,7 +1187,8 @@
             for (const confirmationContext of contexts) {
                 const text = (confirmationContext.innerText || '').replace(/\s+/g, ' ').trim();
                 const namesItem = text.toLowerCase().includes(item.name.toLowerCase());
-                const asksToBuy = /do\s+you\s+want\s+to\s+buy|are\s+you\s+sure|confirm\s+(?:your\s+)?purchase/i.test(text);
+                const asksToBuy = new RegExp(`\\bbuy\\s+${amount}x\\s+`, 'i').test(text)
+                    || /do\s+you\s+want\s+to\s+buy|are\s+you\s+sure|confirm\s+(?:your\s+)?purchase/i.test(text);
                 if (!namesItem || !asksToBuy) continue;
 
                 const button = [...confirmationContext.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
@@ -1173,48 +1196,16 @@
                     const label = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || '')
                         .replace(/\s+/g, ' ')
                         .trim();
-                    return /^(?:yes|confirm|buy|purchase)(?:\s+(?:now|items?))?$/i.test(label);
+                    return /^yes$/i.test(label);
                 });
                 if (button) return button;
             }
             return null;
         }, 2500);
 
-        confirmation?.click();
-        recordPurchaseAttempt(item, amount, confirmation ? 'CONFIRMATION_CLICKED' : 'PURCHASE_SUBMITTED', null, {
-            confirmationButton: confirmation ? controlSnapshot(confirmation) : null
-        });
-
-        if (!confirmation) {
-            recordPurchaseAttempt(item, amount, 'CONFIRMATION_NOT_FOUND',
-                'Torn did not open the purchase confirmation.', {
-                    rowControls: snapshotControls(row),
-                    visibleRelevantControls: diagnosticPurchaseControls()
-                });
-            throw new Error('Torn purchase confirmation was not found. Try again.');
-        }
-
-        const finalConfirmation = await waitForValue(() => {
-            row = findNativeShopRow(item) || row;
-            if (!row || !visibleElement(row)) return null;
-
-            const text = (row.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
-            const expectedPurchase = `buy ${amount}x ${item.name.toLowerCase()} for`;
-            if (!text.includes(expectedPurchase)) return null;
-
-            return [...row.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
-                if (!visibleElement(candidate) || candidate.disabled) return false;
-                const label = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || '')
-                    .replace(/\s+/g, ' ')
-                    .trim();
-                return /^yes$/i.test(label);
-            }) || null;
-        }, 2500);
-
         finalConfirmation?.click();
         recordPurchaseAttempt(item, amount, finalConfirmation ? 'FINAL_CONFIRMATION_CLICKED' : 'FINAL_CONFIRMATION_NOT_FOUND',
             finalConfirmation ? null : 'Torn opened a final Yes/No purchase prompt, but its Yes button was not found.', {
-                confirmationButton: controlSnapshot(confirmation),
                 finalConfirmationButton: finalConfirmation ? controlSnapshot(finalConfirmation) : null,
                 rowControls: snapshotControls(row)
             });
