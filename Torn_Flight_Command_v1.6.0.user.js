@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.8
+// @version      1.8.9
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.8';
+    const VERSION = 'v1.8.9';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -323,6 +323,7 @@
 
     let panelOpen = false;
     let mexicoOpen = false;
+    let filtersOpen = false;
     let lastFlightInfo = null;
     let lastFlightSeen = 0;
 
@@ -542,6 +543,13 @@
                 letter-spacing: .6px;
             }
 
+            #fc-mexico-tab.active,
+            #fc-filters-tab.active {
+                border-color: #5681ad;
+                background: #294764;
+                color: #eef7ff;
+            }
+
             #fc-mexico-panel,
             #fc-filters-panel {
                 margin: 0 20px 20px;
@@ -614,18 +622,6 @@
             .fc-highlight-toggle input:checked + .fc-toggle-track .fc-toggle-knob {
                 transform: translateX(16px);
                 background: #fff;
-            }
-
-            #fc-mexico-minimize,
-            #fc-filters-minimize {
-                width: 38px;
-                height: 32px;
-                border: 0;
-                border-radius: 9px;
-                background: #354f73;
-                color: #dceaff;
-                font-size: 21px;
-                font-weight: 800;
             }
 
             #fc-mexico-content {
@@ -859,7 +855,6 @@
             <div id="fc-mexico-panel" style="display:none;">
                 <div id="fc-mexico-header">
                     <div id="fc-mexico-title">MEXICO</div>
-                    <button id="fc-mexico-minimize" type="button">-</button>
                 </div>
                 <div id="fc-mexico-content"></div>
             </div>
@@ -874,7 +869,6 @@
                             <span class="fc-toggle-track"><span class="fc-toggle-knob"></span></span>
                         </label>
                     </div>
-                    <button id="fc-filters-minimize" type="button">-</button>
                 </div>
                 <div id="fc-filters-content">
                     <div class="fc-profit-mode" aria-label="Best-profit highlight mode">
@@ -899,10 +893,8 @@
         document.body.appendChild(panel);
 
         document.getElementById('fc-minimize').addEventListener('click', closePanel);
-        document.getElementById('fc-mexico-tab').addEventListener('click', openMexico);
-        document.getElementById('fc-mexico-minimize').addEventListener('click', closeMexico);
-        document.getElementById('fc-filters-tab').addEventListener('click', openFilters);
-        document.getElementById('fc-filters-minimize').addEventListener('click', closeFilters);
+        document.getElementById('fc-mexico-tab').addEventListener('click', toggleMexicoSection);
+        document.getElementById('fc-filters-tab').addEventListener('click', toggleFiltersSection);
         const diagnosticButton = document.getElementById('fc-copy-diagnostics');
         diagnosticButton.addEventListener('click', () => copyDiagnosticData(diagnosticButton));
         document.getElementById('fc-highlight-switch').addEventListener('change', event => {
@@ -1912,6 +1904,7 @@
         mexicoOpen = true;
         const panel = document.getElementById('fc-mexico-panel');
         if (panel) panel.style.display = 'block';
+        document.getElementById('fc-mexico-tab')?.classList.add('active');
         refreshMexicoFeed();
         void refreshMarketPrices();
         renderMexicoItems(true);
@@ -1921,18 +1914,33 @@
         mexicoOpen = false;
         const panel = document.getElementById('fc-mexico-panel');
         if (panel) panel.style.display = 'none';
+        document.getElementById('fc-mexico-tab')?.classList.remove('active');
+    }
+
+    function toggleMexicoSection() {
+        if (mexicoOpen) closeMexico();
+        else openMexico();
     }
 
     function openFilters() {
         closeMexico();
+        filtersOpen = true;
         const panel = document.getElementById('fc-filters-panel');
         if (panel) panel.style.display = 'block';
+        document.getElementById('fc-filters-tab')?.classList.add('active');
         syncFilterControls();
     }
 
     function closeFilters() {
+        filtersOpen = false;
         const panel = document.getElementById('fc-filters-panel');
         if (panel) panel.style.display = 'none';
+        document.getElementById('fc-filters-tab')?.classList.remove('active');
+    }
+
+    function toggleFiltersSection() {
+        if (filtersOpen) closeFilters();
+        else openFilters();
     }
 
     function openPanel() {
@@ -1950,6 +1958,7 @@
     function closePanel() {
         panelOpen = false;
         mexicoOpen = false;
+        filtersOpen = false;
         closeFilters();
         document.body.classList.remove('fc-active');
         document.getElementById('fc-panel')?.remove();
