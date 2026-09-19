@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.4
+// @version      1.7.5
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.4';
+    const VERSION = 'v1.7.5';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1051,8 +1051,15 @@
         });
 
         for (const context of contexts.filter(Boolean)) {
-            const input = [...context.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
-                .find(candidate => visibleElement(candidate) && !candidate.disabled);
+            const input = [...context.querySelectorAll(
+                'input.input-money, input[placeholder*="Qty" i], input[type="number"], input[inputmode="numeric"], input[type="text"]'
+            )].find(candidate =>
+                visibleElement(candidate)
+                && !candidate.disabled
+                && candidate.type !== 'hidden'
+                && candidate.type !== 'button'
+                && candidate.type !== 'submit'
+            );
             const button = purchaseButtonWithin(context, item.name);
             if (input && button) return { input, button, context };
         }
