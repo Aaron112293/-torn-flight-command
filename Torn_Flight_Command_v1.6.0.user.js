@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.2
+// @version      1.8.3
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.2';
+    const VERSION = 'v1.8.3';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1037,7 +1037,7 @@
         if (!context) return null;
         const buttons = [...context.querySelectorAll('button, [role="button"], input[type="submit"]')];
         return buttons.find(button => {
-            if (!visibleElement(button) || button.disabled || button.closest('#fc-panel, #fc-mexico-panel')) return false;
+            if (!visibleElement(button) || button.closest('#fc-panel, #fc-mexico-panel')) return false;
             const text = (button.innerText || button.value || '').replace(/\s+/g, ' ').trim();
             const className = typeof button.className === 'string' ? button.className : '';
             const hint = [
@@ -1074,7 +1074,13 @@
         });
 
         for (const context of contexts.filter(Boolean)) {
-            const input = [...context.querySelectorAll(
+            const button = purchaseButtonWithin(context, item.name);
+            if (!button) continue;
+
+            // Torn retains an older quantity input beside the current form.
+            // Scope the lookup to the form containing the live BUY button.
+            const inputContext = button.closest('form') || context;
+            const input = [...inputContext.querySelectorAll(
                 'input.input-money, input[placeholder*="Qty" i], input[type="number"], input[inputmode="numeric"], input[type="text"]'
             )].find(candidate =>
                 !candidate.disabled
@@ -1083,8 +1089,7 @@
                 && candidate.type !== 'submit'
                 && activeFormControl(candidate)
             );
-            const button = purchaseButtonWithin(context, item.name);
-            if (input && button) return { input, button, context };
+            if (input) return { input, button, context: inputContext };
         }
         return null;
     }
@@ -1162,14 +1167,25 @@
         setNativeInputValue(input, amount);
         input.focus();
         input.blur();
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Torn enables BUY asynchronously after its controlled input receives
+        // the quantity. Re-resolve the form and wait for that enabled state.
+        const refreshedControls = await waitForValue(() => {
+            row = findNativeShopRow(item) || row;
+            if (!shopRowIsExpanded(row)) return null;
+            const current = purchaseControlsFor(item, row);
+            return current && !current.button.disabled ? current : null;
+        }, 2500);
+        if (!refreshedControls) {
+            recordPurchaseAttempt(item, amount, 'BUY_BUTTON_NOT_ENABLED',
+                'Torn did not enable the BUY button after the quantity was entered.', {
+                    input: controlSnapshot(input),
+                    purchaseButton: controlSnapshot(purchaseButton),
+                    rowControls: snapshotControls(row)
+                });
+            throw new Error('Torn did not accept the purchase quantity. Try again.');
+        }
 
-        // The controlled quantity input can make Torn replace the expanded
-        // form nodes. Resolve them again so the click always targets the live
-        // submit button rather than a detached pre-render element.
-        row = findNativeShopRow(item) || row;
-        const refreshedControls = shopRowIsExpanded(row) ? purchaseControlsFor(item, row) : null;
-        const livePurchaseButton = refreshedControls?.button || purchaseButton;
+        const livePurchaseButton = refreshedControls.button;
         livePurchaseButton.click();
         recordPurchaseAttempt(item, amount, 'PURCHASE_CLICKED', null, {
             input: controlSnapshot(refreshedControls?.input || input),
