@@ -1,29 +1,35 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.12
-// @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
+// @version      1.9.0
+// @description  Flight Command travel cards with live player-market and Torn NPC profit across every destination
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @match        https://www.torn.com/*
 // @connect      yata.yt
 // @connect      weav3r.dev
+// @connect      api.torn.com
 // @grant        none
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.12';
+    const VERSION = 'v1.9.0';
+    const PANEL_INTERACTION_READY_AT = Date.now() + 1500;
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
-    const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
+    const FEED_CACHE_KEY = 'fc-all-foreign-stock-cache-v2';
     const PRICE_API_BASE = 'https://weav3r.dev/api/marketplace/';
     const PRICE_CACHE_KEY = 'fc-weav3r-market-price-cache-v1';
     const LIVE_BRIDGE_KEY = 'flightCommandLiveShopBridgeV1';
+    const TORN_API_KEY = '###PDA-APIKEY###';
+    const TORN_ITEMS_API = 'https://api.torn.com/v2/torn/items?sort=ASC&striptags=true';
+    const NPC_CACHE_KEY = 'fc-torn-item-npc-cache-v1';
     const FEED_REFRESH_MS = 30000;
     const PRICE_REFRESH_MS = 15 * 60 * 1000;
     const PRICE_FORCE_COOLDOWN_MS = 60 * 1000;
+    const NPC_REFRESH_MS = 24 * 60 * 60 * 1000;
 
     const itemCardState = new Map();
     let mexicoRenderSignature = '';
@@ -35,7 +41,7 @@
         ? savedSortMode
         : 'profit-high';
     let hideSoldOut = localStorage.getItem('fc-hide-sold-out') === 'true';
-    let mexicoFeed = loadCachedMexicoFeed();
+    let foreignFeed = loadCachedForeignFeed();
     let feedLoading = false;
     let feedError = '';
     let lastFeedRequest = 0;
@@ -45,6 +51,24 @@
     let marketPriceProgress = { complete: 0, total: 0 };
     let lastMarketPriceBatch = 0;
     let lastPurchaseAttempt = null;
+    let npcCatalog = loadCachedNpcCatalog();
+    let npcCatalogLoading = false;
+    let npcCatalogError = '';
+    let displayedCatalogCountry = '';
+
+    const COUNTRY_FEED_CODES = {
+        Mexico: 'mex',
+        'Cayman Islands': 'cay',
+        Canada: 'can',
+        Hawaii: 'haw',
+        'United Kingdom': 'uni',
+        Argentina: 'arg',
+        Switzerland: 'swi',
+        Japan: 'jap',
+        China: 'chi',
+        'United Arab Emirates': 'uae',
+        'South Africa': 'sou'
+    };
 
     const CITY_TO_COUNTRY = {
         'ciudad juarez': 'Mexico',
@@ -96,16 +120,54 @@
         { name: 'Obsidian Point', shop: 'Black Market', minCost: 108363, maxCost: 152939, market: 144689 }
     ];
 
-    function loadCachedMexicoFeed() {
+    function normalizedCountryName(value) {
+        const name = String(value || '').trim().toLowerCase();
+        const aliases = {
+            caymans: 'cayman islands',
+            'cayman islands': 'cayman islands',
+            uk: 'united kingdom',
+            'united kingdom': 'united kingdom',
+            uae: 'united arab emirates',
+            'united arab emirates': 'united arab emirates'
+        };
+        return aliases[name] || name;
+    }
+
+    function catalogItems(country = currentCatalogCountry()) {
+        const stocks = countryFeed(country)?.stocks || [];
+
+        if (country === 'Mexico') {
+            return MEXICO_ITEMS.map(item => {
+                const feed = stocks.find(candidate => candidate.name === item.name);
+                return { ...item, id: feed?.id ?? item.id ?? null };
+            });
+        }
+
+        return stocks.map(feed => {
+            const npc = npcItemById(feed.id);
+            const foreignShop = npc?.shops?.find(row =>
+                normalizedCountryName(row.country) === normalizedCountryName(country)
+                && Number.isFinite(row.buyPrice)
+            );
+            return {
+                id: feed.id,
+                name: feed.name,
+                shop: foreignShop?.shop || 'Foreign Shops',
+                cost: feed.cost
+            };
+        });
+    }
+
+    function loadCachedForeignFeed() {
         try {
             const cached = JSON.parse(localStorage.getItem(FEED_CACHE_KEY) || 'null');
-            return Array.isArray(cached?.stocks) ? cached : null;
+            return cached?.countries && typeof cached.countries === 'object' ? cached : null;
         } catch (error) {
             return null;
         }
     }
 
-    function saveMexicoFeed(feed) {
+    function saveForeignFeed(feed) {
         try {
             localStorage.setItem(FEED_CACHE_KEY, JSON.stringify(feed));
         } catch (error) {
@@ -113,8 +175,144 @@
         }
     }
 
-    function feedItemByName(name) {
-        return mexicoFeed?.stocks?.find(item => item.name === name) || null;
+    function nativePageText() {
+        return [...(document.body?.children || [])]
+            .filter(element => element.id !== 'fc-panel')
+            .map(element => element.innerText || '')
+            .join('\n');
+    }
+
+    function currentCatalogCountry() {
+        const detected = getFlightInfo()?.country;
+        if (COUNTRY_FEED_CODES[detected]) return detected;
+
+        const pageText = nativePageText().toLowerCase();
+        let bestCountry = null;
+        let bestMatches = 1;
+        for (const country of Object.keys(COUNTRY_FEED_CODES)) {
+            const matches = (foreignFeed?.countries?.[country]?.stocks || [])
+                .filter(item => item.name && pageText.includes(item.name.toLowerCase()))
+                .length;
+            if (matches > bestMatches) {
+                bestCountry = country;
+                bestMatches = matches;
+            }
+        }
+        return bestCountry || 'Mexico';
+    }
+
+    function countryFeed(country = currentCatalogCountry()) {
+        return foreignFeed?.countries?.[country] || null;
+    }
+
+    function feedItemByName(name, country = currentCatalogCountry()) {
+        return countryFeed(country)?.stocks?.find(item => item.name === name) || null;
+    }
+
+    function loadCachedNpcCatalog() {
+        try {
+            const cached = JSON.parse(localStorage.getItem(NPC_CACHE_KEY) || 'null');
+            return cached?.items && typeof cached.items === 'object' ? cached : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function saveNpcCatalog(catalog) {
+        try {
+            localStorage.setItem(NPC_CACHE_KEY, JSON.stringify(catalog));
+        } catch (error) {
+            // Current NPC data remains usable if storage is unavailable.
+        }
+    }
+
+    function npcItemById(id) {
+        return Number.isFinite(Number(id)) ? npcCatalog?.items?.[String(id)] || null : null;
+    }
+
+    function normalizedShopRows(value) {
+        if (Array.isArray(value?.shops)) return value.shops;
+        if (value?.vendor) {
+            return [{
+                country: value.vendor.country,
+                shop: value.vendor.name,
+                buy_price: value.buy_price,
+                sell_price: value.sell_price
+            }];
+        }
+        return [];
+    }
+
+    function normalizeNpcCatalog(data) {
+        const rawEntries = Array.isArray(data?.items)
+            ? data.items.map(item => [item?.id, item])
+            : Object.entries(data?.items || {});
+        const items = {};
+
+        for (const [fallbackId, raw] of rawEntries) {
+            const id = Number(raw?.id ?? fallbackId);
+            if (!Number.isFinite(id)) continue;
+            const rows = normalizedShopRows(raw?.value);
+            const npcRow = rows.find(row =>
+                Number.isFinite(Number(row?.sell_price)) && /^(?:torn|torn city)$/i.test(String(row?.country || ''))
+            ) || rows.find(row => Number.isFinite(Number(row?.sell_price)));
+
+            items[String(id)] = {
+                id,
+                name: String(raw?.name || ''),
+                type: String(raw?.type || raw?.details?.category || ''),
+                shops: rows.map(row => ({
+                    country: String(row?.country || ''),
+                    shop: String(row?.shop || row?.name || ''),
+                    buyPrice: Number.isFinite(Number(row?.buy_price)) ? Number(row.buy_price) : null,
+                    sellPrice: Number.isFinite(Number(row?.sell_price)) ? Number(row.sell_price) : null
+                })),
+                npcSale: Number.isFinite(Number(npcRow?.sell_price)) ? Number(npcRow.sell_price) : null,
+                npcStore: String(npcRow?.shop || npcRow?.name || 'Torn NPC shop')
+            };
+        }
+
+        return { receivedAt: Date.now(), items };
+    }
+
+    async function refreshNpcCatalog(force = false) {
+        if (npcCatalogLoading) return;
+        if (!force && npcCatalog?.receivedAt && Date.now() - npcCatalog.receivedAt < NPC_REFRESH_MS) return;
+        if (!TORN_API_KEY || TORN_API_KEY.includes('PDA-APIKEY')) {
+            npcCatalogError = 'Torn PDA API key was not inserted.';
+            return;
+        }
+
+        npcCatalogLoading = true;
+        npcCatalogError = '';
+        mexicoRenderSignature = '';
+        renderMexicoItems(true);
+
+        try {
+            const url = `${TORN_ITEMS_API}&key=${encodeURIComponent(TORN_API_KEY)}&comment=flight_command_npc`;
+            let data;
+            if (typeof PDA_httpGet === 'function') {
+                const response = await PDA_httpGet(url, { Accept: 'application/json' });
+                const text = responseText(response);
+                if (!text) throw new Error('Torn API returned no response text.');
+                data = JSON.parse(text);
+            } else {
+                const response = await fetch(url, { cache: 'no-store', credentials: 'omit' });
+                if (!response.ok) throw new Error(`Torn API request failed (${response.status}).`);
+                data = await response.json();
+            }
+            if (data?.error) throw new Error(data.error.error || 'Torn API rejected the request.');
+            const normalized = normalizeNpcCatalog(data);
+            if (!Object.keys(normalized.items).length) throw new Error('Torn API item catalog was empty.');
+            npcCatalog = normalized;
+            saveNpcCatalog(npcCatalog);
+        } catch (error) {
+            npcCatalogError = error?.message || String(error);
+        } finally {
+            npcCatalogLoading = false;
+            mexicoRenderSignature = '';
+            renderMexicoItems(true);
+        }
     }
 
     function loadCachedMarketPrices() {
@@ -193,7 +391,7 @@
     }
 
     async function refreshMarketPrices(force = false) {
-        if (marketPriceLoading || !Array.isArray(mexicoFeed?.stocks)) return;
+        if (marketPriceLoading || !Array.isArray(countryFeed()?.stocks)) return;
         if (force && Date.now() - lastMarketPriceBatch < PRICE_FORCE_COOLDOWN_MS) {
             marketPriceError = 'Price refresh is limited to once per minute.';
             mexicoRenderSignature = '';
@@ -201,7 +399,7 @@
             return;
         }
 
-        const available = MEXICO_ITEMS
+        const available = catalogItems()
             .map(item => feedItemByName(item.name))
             .filter(item => Number.isFinite(item?.id) && Number(item.quantity) > 0);
         const targets = available.filter(item => {
@@ -292,27 +490,33 @@
 
         try {
             const data = await requestFeedJson();
-            const mexico = data?.stocks?.mex;
-
-            if (!mexico || !Array.isArray(mexico.stocks)) {
-                throw new Error('Mexico stock data was missing from the feed.');
+            const sourceCountries = data?.stocks;
+            if (!sourceCountries || typeof sourceCountries !== 'object') {
+                throw new Error('Country stock data was missing from the feed.');
             }
 
-            mexicoFeed = {
-                update: Number(mexico.update) || null,
-                receivedAt: Date.now(),
-                stocks: mexico.stocks.map(item => ({
-                    id: Number(item.id),
-                    name: String(item.name || ''),
-                    cost: Number(item.cost),
-                    quantity: Number(item.quantity)
-                }))
-            };
+            const countries = {};
+            for (const [country, code] of Object.entries(COUNTRY_FEED_CODES)) {
+                const source = sourceCountries[code];
+                if (!source || !Array.isArray(source.stocks)) continue;
+                countries[country] = {
+                    update: Number(source.update) || null,
+                    stocks: source.stocks.map(item => ({
+                        id: Number(item.id),
+                        name: String(item.name || ''),
+                        cost: Number(item.cost),
+                        quantity: Number(item.quantity)
+                    }))
+                };
+            }
+            if (!Object.keys(countries).length) throw new Error('No supported countries were found in the stock feed.');
 
-            saveMexicoFeed(mexicoFeed);
+            foreignFeed = { receivedAt: Date.now(), countries };
+            saveForeignFeed(foreignFeed);
             mexicoRenderSignature = '';
             renderMexicoItems(true);
             void refreshMarketPrices();
+            void refreshNpcCatalog();
         } catch (error) {
             feedError = error?.message || String(error);
             mexicoRenderSignature = '';
@@ -366,7 +570,7 @@
     }
 
     function getFlightInfo() {
-        const text = document.body?.innerText || '';
+        const text = nativePageText();
         const travelingVisible = globalTravelIndicatorIsVisible(text);
         let routeMatch = null;
 
@@ -923,6 +1127,7 @@
 
         updatePanel();
         renderMexicoItems();
+        void refreshNpcCatalog();
     }
 
     function enableCapturedTouchScroll(element) {
@@ -1204,8 +1409,9 @@
         let row = findNativeShopRow(item);
         recordPurchaseAttempt(item, amount, 'STARTED');
         if (!row) {
-            recordPurchaseAttempt(item, amount, 'FAILED', 'Mexico shop row was not found.');
-            throw new Error('Open the Mexico shop page before buying.');
+            const country = currentCatalogCountry();
+            recordPurchaseAttempt(item, amount, 'FAILED', `${country} shop row was not found.`);
+            throw new Error(`Open the ${country} shop page before buying.`);
         }
 
         recordPurchaseAttempt(item, amount, 'SHOP_ROW_FOUND', null, {
@@ -1395,7 +1601,8 @@
 
         const bridgeItems = {};
 
-        for (const catalogItem of MEXICO_ITEMS) {
+        const bridgeCountry = currentCatalogCountry();
+        for (const catalogItem of catalogItems(bridgeCountry)) {
             const feed = feedItemByName(catalogItem.name);
             if (!Number.isFinite(feed?.id)) continue;
 
@@ -1422,7 +1629,7 @@
         try {
             localStorage.setItem(LIVE_BRIDGE_KEY, JSON.stringify({
                 source: 'DIRECT_TORN_SHOP',
-                country: 'Mexico',
+                country: bridgeCountry,
                 observedAt: Date.now(),
                 items: bridgeItems
             }));
@@ -1435,7 +1642,9 @@
     function getCardData(item) {
         const live = readLiveListing(item);
         const feed = feedItemByName(item.name);
-        const priceData = marketPriceById(feed?.id ?? item.id);
+        const itemId = feed?.id ?? item.id;
+        const npc = npcItemById(itemId);
+        const priceData = marketPriceById(itemId);
         const feedCost = Number.isFinite(feed?.cost) ? feed.cost : null;
         const feedQuantity = Number.isFinite(feed?.quantity) ? feed.quantity : null;
         const cost = live?.cost ?? feedCost ?? item.cost ?? item.minCost;
@@ -1447,19 +1656,22 @@
         const playerProfit = Number.isFinite(resalePrice) && Number.isFinite(cost)
             ? resalePrice - cost
             : null;
-        const npcProfit = Number.isFinite(item.npcSale) && Number.isFinite(cost)
-            ? item.npcSale - cost
+        const npcSale = Number.isFinite(npc?.npcSale) ? npc.npcSale : item.npcSale;
+        const npcProfit = Number.isFinite(npcSale) && Number.isFinite(cost)
+            ? npcSale - cost
             : null;
 
         return {
             ...item,
-            id: feed?.id ?? item.id ?? null,
+            id: itemId ?? null,
             cost,
             quantity,
             soldOut,
             resalePrice,
             playerProfit,
             npcProfit,
+            npcSale,
+            npcStore: npc?.npcStore || item.npcStore || null,
             marketPriceData: priceData,
             priceSource: Number.isFinite(priceData?.lowestListingPrice)
                 ? 'WEAV3R LOWEST LISTING'
@@ -1493,13 +1705,22 @@
 
     function feedStatusText() {
         if (feedLoading) return 'Stock feed: refreshing...';
-        if (mexicoFeed?.update) {
-            const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000 - mexicoFeed.update));
+        const feed = countryFeed();
+        if (feed?.update) {
+            const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000 - feed.update));
             return `Stock feed: ${ageSeconds}s old`;
         }
-        if (mexicoFeed?.receivedAt) return 'Stock feed: cached';
+        if (foreignFeed?.receivedAt) return 'Stock feed: cached';
         if (feedError) return `Stock feed unavailable: ${feedError}`;
         return 'Stock feed: waiting for first refresh';
+    }
+
+    function npcStatusText() {
+        if (npcCatalogLoading) return 'NPC prices: loading Torn item catalog...';
+        if (npcCatalogError) return `NPC prices unavailable: ${npcCatalogError}`;
+        if (!npcCatalog?.receivedAt) return 'NPC prices: waiting for Torn item catalog';
+        const ageSeconds = Math.max(0, Math.floor((Date.now() - npcCatalog.receivedAt) / 1000));
+        return `NPC prices: Torn catalog, refreshed ${ageSeconds < 60 ? `${ageSeconds}s` : `${Math.floor(ageSeconds / 60)}m`} ago`;
     }
 
     function priceStatusText() {
@@ -1521,7 +1742,9 @@
 
         syncFilterControls();
 
-        const items = MEXICO_ITEMS.map(getCardData);
+        const country = currentCatalogCountry();
+        const catalog = catalogItems(country);
+        const items = catalog.map(getCardData);
         const travelCapacity = readTravelCapacity();
         const signature = JSON.stringify(items.map(item => [
             item.cost,
@@ -1588,10 +1811,13 @@
             const isBest = Number.isFinite(bestProfit) && selectedProfit(item) === bestProfit;
             const quantityLabel = item.soldOut
                 ? 'SOLD OUT'
-                : (Number.isFinite(item.quantity) ? item.quantity.toLocaleString('en-US') : 'Stock updates in Mexico');
+                : (Number.isFinite(item.quantity) ? item.quantity.toLocaleString('en-US') : `Stock updates in ${country}`);
             const totalCost = displayedAmount * item.cost;
             const totalMarketProfit = Number.isFinite(item.playerProfit)
                 ? displayedAmount * item.playerProfit
+                : null;
+            const totalNpcProfit = Number.isFinite(item.npcProfit)
+                ? displayedAmount * item.npcProfit
                 : null;
 
             cards += `
@@ -1617,9 +1843,10 @@
                         <div class="fc-profit-section">
                             <div class="fc-profit-title">NPC STORE PROFIT</div>
                             <div>Sell to: <strong>${escapeHtml(item.npcStore || 'Store data pending')}</strong></div>
-                            <div>Profit: <strong>${money(item.npcProfit)}</strong></div>
-                            <div>Profit range: <strong>-</strong></div>
+                            <div>NPC sale price: <strong>${Number.isFinite(item.npcSale) ? money(item.npcSale) : 'Torn catalog pending'}</strong></div>
+                            <div>Per item: <strong>${Number.isFinite(item.npcProfit) ? money(item.npcProfit) : 'Torn catalog pending'}</strong></div>
                             <div>Profit: <strong>${profitPercent(item.npcProfit, item.cost)}</strong></div>
+                            <div>Selected total profit: <strong class="fc-total-npc-profit">${money(totalNpcProfit)}</strong></div>
                         </div>
                         <div class="fc-profit-section">
                             <div class="fc-profit-title">PLAYER MARKET PROFIT</div>
@@ -1636,7 +1863,7 @@
 
         content.classList.toggle('fc-highlights-on', highlightingEnabled);
         content.innerHTML = `
-            <div class="fc-catalog-note">Complete Mexico catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}<br>${travelCapacity ? `Travel capacity: ${travelCapacity.used}/${travelCapacity.total} used · ${travelCapacity.remaining} slots remaining` : 'Travel capacity: waiting for Torn capacity display'}</div>
+            <div class="fc-catalog-note">Complete ${escapeHtml(country)} catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}<br>${escapeHtml(npcStatusText())}<br>${travelCapacity ? `Travel capacity: ${travelCapacity.used}/${travelCapacity.total} used · ${travelCapacity.remaining} slots remaining` : 'Travel capacity: waiting for Torn capacity display'}</div>
             <button id="fc-refresh-prices" class="fc-button" type="button" ${marketPriceLoading ? 'disabled' : ''}>REFRESH MARKET PRICES</button>
             ${cards}`;
 
@@ -1692,7 +1919,7 @@
     }
 
     function diagnosticPurchaseControls() {
-        const itemNames = MEXICO_ITEMS.map(item => item.name.toLowerCase());
+        const itemNames = catalogItems().map(item => item.name.toLowerCase());
         return [...document.querySelectorAll('button, [role="button"], input, select, textarea')]
             .filter(element => {
                 if (!visibleElement(element) || element.closest('#fc-panel, #fc-mexico-panel')) return false;
@@ -1718,7 +1945,8 @@
     function buildDiagnosticReport() {
         const pageText = document.body?.innerText || '';
         const flight = getFlightInfo();
-        const items = MEXICO_ITEMS.map(item => {
+        const catalogCountry = currentCatalogCountry();
+        const items = catalogItems(catalogCountry).map(item => {
             const calculated = getCardData(item);
             return {
                 name: calculated.name,
@@ -1736,6 +1964,7 @@
                 marketPriceSource: calculated.priceSource,
                 weav3rPriceData: calculated.marketPriceData,
                 calculatedPlayerProfit: calculated.playerProfit,
+                detectedNpcSalePrice: calculated.npcSale,
                 calculatedNpcProfit: calculated.npcProfit,
                 npcStore: calculated.npcStore ?? null,
                 matchingPageElements: diagnosticTextForItem(item)
@@ -1760,7 +1989,7 @@
             : null;
 
         return JSON.stringify({
-            report: 'Torn Flight Command Mexico diagnostics',
+            report: `Torn Flight Command ${catalogCountry} diagnostics`,
             scriptVersion: VERSION,
             generatedAt: new Date().toISOString(),
             page: {
@@ -1781,10 +2010,18 @@
             foreignStockFeed: {
                 url: FEED_URL,
                 status: feedStatusText(),
-                update: mexicoFeed?.update ?? null,
-                receivedAt: mexicoFeed?.receivedAt ?? null,
-                itemCount: mexicoFeed?.stocks?.length ?? 0,
+                country: catalogCountry,
+                update: countryFeed(catalogCountry)?.update ?? null,
+                receivedAt: foreignFeed?.receivedAt ?? null,
+                itemCount: countryFeed(catalogCountry)?.stocks?.length ?? 0,
                 lastError: feedError || null
+            },
+            npcPrices: {
+                provider: 'Torn item catalog',
+                status: npcStatusText(),
+                receivedAt: npcCatalog?.receivedAt ?? null,
+                cachedItemCount: Object.keys(npcCatalog?.items || {}).length,
+                lastError: npcCatalogError || null
             },
             playerMarketPrices: {
                 provider: 'TornW3B / Weav3r',
@@ -1817,7 +2054,7 @@
                         .map(item => item.name)
                     : []
             },
-            mexicoItems: items
+            countryItems: items
         }, null, 2);
     }
 
@@ -1895,6 +2132,9 @@
                 card.querySelector('.fc-total-profit').textContent = Number.isFinite(item.playerProfit)
                     ? money(amount * item.playerProfit)
                     : 'Live price pending';
+                card.querySelector('.fc-total-npc-profit').textContent = Number.isFinite(item.npcProfit)
+                    ? money(amount * item.npcProfit)
+                    : 'Torn catalog pending';
                 return amount;
             };
 
@@ -1954,6 +2194,7 @@
         document.getElementById('fc-mexico-tab')?.classList.add('active');
         refreshMexicoFeed();
         void refreshMarketPrices();
+        void refreshNpcCatalog();
         renderMexicoItems(true);
     }
 
@@ -2026,6 +2267,20 @@
 
         if (!country || !route || !mode) return;
 
+        const catalogCountry = currentCatalogCountry();
+        const tab = document.getElementById('fc-mexico-tab');
+        const catalogTitle = document.getElementById('fc-mexico-title');
+        if (tab) tab.textContent = catalogCountry.toUpperCase();
+        if (catalogTitle) catalogTitle.textContent = catalogCountry.toUpperCase();
+        if (displayedCatalogCountry !== catalogCountry) {
+            displayedCatalogCountry = catalogCountry;
+            mexicoRenderSignature = '';
+            if (mexicoOpen) {
+                renderMexicoItems(true);
+                void refreshMarketPrices();
+            }
+        }
+
         if (!info) {
             country.textContent = 'NO FLIGHT DETECTED';
             route.textContent = 'Flight Command is standing by';
@@ -2065,6 +2320,7 @@
     }
 
     function interceptNotes(event) {
+        if (!event.isTrusted || Date.now() < PANEL_INTERACTION_READY_AT) return;
         if (!elementLooksLikeNotesButton(event.target)) return;
 
         event.preventDefault();
@@ -2121,7 +2377,12 @@
         void refreshMarketPrices();
     }, PRICE_REFRESH_MS);
 
+    setInterval(() => {
+        void refreshNpcCatalog();
+    }, 60 * 60 * 1000);
+
     startObserver();
     refreshMexicoFeed(true);
+    void refreshNpcCatalog();
 
 })();
