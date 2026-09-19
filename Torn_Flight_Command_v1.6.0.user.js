@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.6
+// @version      1.7.7
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.6';
+    const VERSION = 'v1.7.7';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1121,12 +1121,19 @@
         });
 
         const confirmation = await waitForValue(() => {
-            const dialogs = [...document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')]
-                .filter(visibleElement);
-            for (const dialog of dialogs) {
-                const text = (dialog.innerText || '').replace(/\s+/g, ' ').trim();
-                if (!text || (!text.toLowerCase().includes(item.name.toLowerCase()) && !/are\s+you\s+sure/i.test(text))) continue;
-                const button = [...dialog.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
+            row = findNativeShopRow(item) || row;
+            const contexts = [
+                row,
+                ...document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')
+            ].filter((context, index, all) => context && visibleElement(context) && all.indexOf(context) === index);
+
+            for (const confirmationContext of contexts) {
+                const text = (confirmationContext.innerText || '').replace(/\s+/g, ' ').trim();
+                const namesItem = text.toLowerCase().includes(item.name.toLowerCase());
+                const asksToBuy = /do\s+you\s+want\s+to\s+buy|are\s+you\s+sure|confirm\s+(?:your\s+)?purchase/i.test(text);
+                if (!namesItem || !asksToBuy) continue;
+
+                const button = [...confirmationContext.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
                     if (!visibleElement(candidate) || candidate.disabled) return false;
                     const label = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || '')
                         .replace(/\s+/g, ' ')
@@ -1136,7 +1143,7 @@
                 if (button) return button;
             }
             return null;
-        }, 1200);
+        }, 2500);
 
         confirmation?.click();
         recordPurchaseAttempt(item, amount, confirmation ? 'CONFIRMATION_CLICKED' : 'PURCHASE_SUBMITTED', null, {
