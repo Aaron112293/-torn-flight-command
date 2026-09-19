@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.10
+// @version      1.8.11
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.10';
+    const VERSION = 'v1.8.11';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -561,6 +561,16 @@
                 overflow-y: auto;
             }
 
+            #fc-filters-panel {
+                height: min(29vh, 190px);
+                max-height: min(29vh, 190px);
+                overflow-y: scroll;
+                overscroll-behavior: contain;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-gutter: stable;
+                touch-action: none;
+            }
+
             #fc-mexico-header,
             #fc-filters-header {
                 min-height: 48px;
@@ -871,6 +881,7 @@
         document.getElementById('fc-minimize').addEventListener('click', closePanel);
         document.getElementById('fc-mexico-tab').addEventListener('click', toggleMexicoSection);
         document.getElementById('fc-filters-tab').addEventListener('click', toggleFiltersSection);
+        enableCapturedTouchScroll(document.getElementById('fc-filters-panel'));
         const diagnosticButton = document.getElementById('fc-copy-diagnostics');
         diagnosticButton.addEventListener('click', () => copyDiagnosticData(diagnosticButton));
         document.getElementById('fc-highlight-switch').addEventListener('change', event => {
@@ -906,6 +917,34 @@
 
         updatePanel();
         renderMexicoItems();
+    }
+
+    function enableCapturedTouchScroll(element) {
+        if (!element) return;
+
+        let previousY = null;
+
+        element.addEventListener('touchstart', event => {
+            previousY = event.touches[0]?.clientY ?? null;
+        }, { passive: true });
+
+        element.addEventListener('touchmove', event => {
+            const currentY = event.touches[0]?.clientY;
+            if (!Number.isFinite(currentY) || !Number.isFinite(previousY)) return;
+
+            element.scrollTop += previousY - currentY;
+            previousY = currentY;
+
+            if (event.cancelable) event.preventDefault();
+            event.stopPropagation();
+        }, { passive: false });
+
+        const finishTouch = () => {
+            previousY = null;
+        };
+
+        element.addEventListener('touchend', finishTouch, { passive: true });
+        element.addEventListener('touchcancel', finishTouch, { passive: true });
     }
 
     function escapeHtml(value) {
