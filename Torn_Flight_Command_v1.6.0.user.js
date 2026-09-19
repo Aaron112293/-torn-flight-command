@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.7
+// @version      1.8.8
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.7';
+    const VERSION = 'v1.8.8';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -635,6 +635,27 @@
 
             #fc-filters-content {
                 padding: 10px;
+                max-height: min(52vh, 520px);
+                overflow-y: scroll;
+                overscroll-behavior: contain;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: auto;
+                scrollbar-color: #5681ad rgba(0,0,0,.24);
+            }
+
+            #fc-filters-content::-webkit-scrollbar {
+                width: 9px;
+            }
+
+            #fc-filters-content::-webkit-scrollbar-track {
+                background: rgba(0,0,0,.24);
+                border-radius: 8px;
+            }
+
+            #fc-filters-content::-webkit-scrollbar-thumb {
+                background: #5681ad;
+                border: 2px solid rgba(0,0,0,.24);
+                border-radius: 8px;
             }
 
             .fc-shop-heading {
