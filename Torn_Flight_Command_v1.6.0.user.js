@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.3
+// @version      1.8.4
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.3';
+    const VERSION = 'v1.8.4';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1146,7 +1146,29 @@
                 row = findNativeShopRow(item) || row;
                 if (!shopRowIsExpanded(row)) return null;
                 return purchaseControlsFor(item, row);
-            });
+            }, 700);
+
+            // After a successful or rejected purchase, Torn can leave the old
+            // result panel expanded. Its first cart click only closes that
+            // panel. If the row is now collapsed, click the freshly mounted
+            // cart once more to open a new quantity form.
+            if (!controls) {
+                row = findNativeShopRow(item) || row;
+                if (!shopRowIsExpanded(row)) {
+                    const retryBuyIcon = shopBuyIcon(row);
+                    retryBuyIcon?.click();
+                    recordPurchaseAttempt(item, amount,
+                        retryBuyIcon ? 'PURCHASE_REOPEN_CLICKED' : 'PURCHASE_REOPEN_CONTROL_NOT_FOUND', null, {
+                            rowControls: snapshotControls(row)
+                        });
+                }
+
+                controls = await waitForValue(() => {
+                    row = findNativeShopRow(item) || row;
+                    if (!shopRowIsExpanded(row)) return null;
+                    return purchaseControlsFor(item, row);
+                }, 2500);
+            }
         }
 
         if (!controls) {
