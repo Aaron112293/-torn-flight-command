@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.5
+// @version      1.8.6
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.5';
+    const VERSION = 'v1.8.6';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -830,9 +830,9 @@
             </div>
 
             <div id="fc-tabs">
+                <button id="fc-copy-diagnostics" type="button">COPY DIAGNOSTIC DATA</button>
                 <button id="fc-mexico-tab" type="button">MEXICO</button>
                 <button id="fc-filters-tab" type="button">FILTERS</button>
-                <button id="fc-copy-diagnostics" type="button">COPY DIAGNOSTIC DATA</button>
             </div>
 
             <div id="fc-mexico-panel" style="display:none;">
