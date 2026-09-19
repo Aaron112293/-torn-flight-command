@@ -32,6 +32,8 @@
     const LONG_PRESS_MS = 650;
     const AUTOMATION_DELAY_MIN_SECONDS = 10;
     const AUTOMATION_DELAY_MAX_SECONDS = 30;
+    const OVERSEAS_PURCHASE_DELAY_MIN_SECONDS = 3;
+    const OVERSEAS_PURCHASE_DELAY_MAX_SECONDS = 15;
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
     const PRICE_API_BASE = 'https://weav3r.dev/api/marketplace/';
@@ -44,6 +46,12 @@
     function randomAutomationDelayMs() {
         const seconds = AUTOMATION_DELAY_MIN_SECONDS
             + Math.floor(Math.random() * (AUTOMATION_DELAY_MAX_SECONDS - AUTOMATION_DELAY_MIN_SECONDS + 1));
+        return seconds * 1000;
+    }
+
+    function randomOverseasPurchaseDelayMs() {
+        const seconds = OVERSEAS_PURCHASE_DELAY_MIN_SECONDS
+            + Math.floor(Math.random() * (OVERSEAS_PURCHASE_DELAY_MAX_SECONDS - OVERSEAS_PURCHASE_DELAY_MIN_SECONDS + 1));
         return seconds * 1000;
     }
 
@@ -3075,7 +3083,7 @@
         if (!pageLooksLikeMexicoShop() || !Number.isFinite(readTravelCapacity()?.remaining)) return;
 
         if (!Number.isFinite(Number(trip.purchaseReadyAt))) {
-            const delayMs = randomAutomationDelayMs();
+            const delayMs = randomOverseasPurchaseDelayMs();
             trip = {
                 ...trip,
                 landingDetectedAt: Date.now(),
