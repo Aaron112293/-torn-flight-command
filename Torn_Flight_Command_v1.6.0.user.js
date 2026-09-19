@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.0
+// @version      1.8.1
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.0';
+    const VERSION = 'v1.8.1';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1076,6 +1076,15 @@
         return null;
     }
 
+    function shopRowIsExpanded(row) {
+        if (!row) return false;
+        return [...row.querySelectorAll('button')].some(button =>
+            visibleElement(button)
+            && typeof button.className === 'string'
+            && /(?:^|\s)expanded___/.test(button.className)
+        );
+    }
+
     async function purchaseFromTornShop(item, amount) {
         let row = findNativeShopRow(item);
         recordPurchaseAttempt(item, amount, 'STARTED');
@@ -1093,11 +1102,7 @@
             const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
             return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
         });
-        const rowIsExpanded = [...row.querySelectorAll('button')].some(button =>
-            visibleElement(button)
-            && typeof button.className === 'string'
-            && /(?:^|\s)expanded___/.test(button.className)
-        );
+        const rowIsExpanded = shopRowIsExpanded(row);
 
         // Torn keeps old quantity inputs mounted after a completed purchase.
         // Re-open a collapsed row before resolving controls so a second BUY MAX
@@ -1112,6 +1117,7 @@
 
             controls = await waitForValue(() => {
                 row = findNativeShopRow(item) || row;
+                if (!shopRowIsExpanded(row)) return null;
                 return purchaseControlsFor(item, row);
             });
         }
@@ -1135,10 +1141,18 @@
         input.focus();
         input.blur();
         await new Promise(resolve => setTimeout(resolve, 100));
-        purchaseButton.click();
+
+        // The controlled quantity input can make Torn replace the expanded
+        // form nodes. Resolve them again so the click always targets the live
+        // submit button rather than a detached pre-render element.
+        row = findNativeShopRow(item) || row;
+        const refreshedControls = shopRowIsExpanded(row) ? purchaseControlsFor(item, row) : null;
+        const livePurchaseButton = refreshedControls?.button || purchaseButton;
+        livePurchaseButton.click();
         recordPurchaseAttempt(item, amount, 'PURCHASE_CLICKED', null, {
-            input: controlSnapshot(input),
-            purchaseButton: controlSnapshot(purchaseButton)
+            input: controlSnapshot(refreshedControls?.input || input),
+            purchaseButton: controlSnapshot(livePurchaseButton),
+            controlsReacquired: Boolean(refreshedControls)
         });
 
         const confirmation = await waitForValue(() => {
