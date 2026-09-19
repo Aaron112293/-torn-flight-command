@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.4
+// @version      1.8.5
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.4';
+    const VERSION = 'v1.8.5';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -524,9 +524,13 @@
 
             #fc-tabs {
                 padding: 0 20px 20px;
+                display: grid;
+                gap: 8px;
             }
 
-            #fc-mexico-tab {
+            #fc-mexico-tab,
+            #fc-filters-tab,
+            #fc-copy-diagnostics {
                 width: 100%;
                 border: 1px solid rgba(255,255,255,.10);
                 border-radius: 10px;
@@ -538,7 +542,8 @@
                 letter-spacing: .6px;
             }
 
-            #fc-mexico-panel {
+            #fc-mexico-panel,
+            #fc-filters-panel {
                 margin: 0 20px 20px;
                 border: 1px solid rgba(255,255,255,.10);
                 border-radius: 12px;
@@ -548,7 +553,8 @@
                 overflow-y: auto;
             }
 
-            #fc-mexico-header {
+            #fc-mexico-header,
+            #fc-filters-header {
                 min-height: 48px;
                 display: flex;
                 align-items: center;
@@ -557,7 +563,8 @@
                 border-bottom: 1px solid rgba(255,255,255,.07);
             }
 
-            #fc-mexico-title {
+            #fc-mexico-title,
+            #fc-filters-title {
                 font-size: 15px;
                 font-weight: 900;
                 letter-spacing: .6px;
@@ -609,7 +616,8 @@
                 background: #fff;
             }
 
-            #fc-mexico-minimize {
+            #fc-mexico-minimize,
+            #fc-filters-minimize {
                 width: 38px;
                 height: 32px;
                 border: 0;
@@ -622,6 +630,10 @@
 
             #fc-mexico-content {
                 min-height: 70px;
+                padding: 10px;
+            }
+
+            #fc-filters-content {
                 padding: 10px;
             }
 
@@ -716,9 +728,7 @@
             .fc-catalog-note { color: #7f8994; font-size: 10px; padding: 2px 2px 10px; }
 
             #fc-copy-diagnostics {
-                width: 100%;
-                margin-bottom: 10px;
-                padding: 10px;
+                padding: 12px 14px;
                 background: #3d5f83;
                 border: 1px solid #5681ad;
                 color: #eef7ff;
@@ -821,21 +831,45 @@
 
             <div id="fc-tabs">
                 <button id="fc-mexico-tab" type="button">MEXICO</button>
+                <button id="fc-filters-tab" type="button">FILTERS</button>
+                <button id="fc-copy-diagnostics" type="button">COPY DIAGNOSTIC DATA</button>
             </div>
 
             <div id="fc-mexico-panel" style="display:none;">
                 <div id="fc-mexico-header">
+                    <div id="fc-mexico-title">MEXICO</div>
+                    <button id="fc-mexico-minimize" type="button">-</button>
+                </div>
+                <div id="fc-mexico-content"></div>
+            </div>
+
+            <div id="fc-filters-panel" style="display:none;">
+                <div id="fc-filters-header">
                     <div class="fc-mexico-heading">
-                        <div id="fc-mexico-title">MEXICO</div>
+                        <div id="fc-filters-title">FILTERS</div>
                         <label class="fc-highlight-toggle" title="Turn profit and sold-out colors on or off">
                             HIGHLIGHT
                             <input id="fc-highlight-switch" type="checkbox" ${highlightingEnabled ? 'checked' : ''}>
                             <span class="fc-toggle-track"><span class="fc-toggle-knob"></span></span>
                         </label>
                     </div>
-                    <button id="fc-mexico-minimize" type="button">-</button>
+                    <button id="fc-filters-minimize" type="button">-</button>
                 </div>
-                <div id="fc-mexico-content"></div>
+                <div id="fc-filters-content">
+                    <div class="fc-profit-mode" aria-label="Best-profit highlight mode">
+                        <button class="fc-mode-choice" data-profit-mode="npc" type="button">NPC PROFIT</button>
+                        <button class="fc-mode-choice" data-profit-mode="market" type="button">PLAYER MARKET</button>
+                    </div>
+                    <div class="fc-sort-mode" aria-label="Item sorting order">
+                        <button class="fc-mode-choice" data-sort-mode="price-high" type="button">HIGHEST PRICE FIRST</button>
+                        <button class="fc-mode-choice" data-sort-mode="price-low" type="button">LOWEST PRICE FIRST</button>
+                        <button class="fc-mode-choice" data-sort-mode="profit-high" type="button">HIGHEST PROFIT FIRST</button>
+                        <button class="fc-mode-choice" data-sort-mode="profit-low" type="button">LOWEST PROFIT FIRST</button>
+                        <button class="fc-mode-choice" data-sort-mode="quantity-high" type="button">HIGHEST QUANTITY FIRST</button>
+                        <button class="fc-mode-choice" data-sort-mode="quantity-low" type="button">LOWEST QUANTITY FIRST</button>
+                    </div>
+                    <button class="fc-sold-out-toggle" data-toggle-sold-out type="button"></button>
+                </div>
             </div>
 
             <div id="fc-footer">FLIGHT COMMAND - ${VERSION}</div>
@@ -846,10 +880,39 @@
         document.getElementById('fc-minimize').addEventListener('click', closePanel);
         document.getElementById('fc-mexico-tab').addEventListener('click', openMexico);
         document.getElementById('fc-mexico-minimize').addEventListener('click', closeMexico);
+        document.getElementById('fc-filters-tab').addEventListener('click', openFilters);
+        document.getElementById('fc-filters-minimize').addEventListener('click', closeFilters);
+        const diagnosticButton = document.getElementById('fc-copy-diagnostics');
+        diagnosticButton.addEventListener('click', () => copyDiagnosticData(diagnosticButton));
         document.getElementById('fc-highlight-switch').addEventListener('change', event => {
             highlightingEnabled = event.target.checked;
             localStorage.setItem('fc-highlighting', highlightingEnabled ? 'on' : 'off');
             document.getElementById('fc-mexico-content')?.classList.toggle('fc-highlights-on', highlightingEnabled);
+        });
+
+        document.querySelectorAll('#fc-filters-content [data-profit-mode]').forEach(button => {
+            button.addEventListener('click', () => {
+                profitMode = button.dataset.profitMode;
+                localStorage.setItem('fc-profit-mode', profitMode);
+                mexicoRenderSignature = '';
+                renderMexicoItems(true);
+            });
+        });
+
+        document.querySelectorAll('#fc-filters-content [data-sort-mode]').forEach(button => {
+            button.addEventListener('click', () => {
+                sortMode = button.dataset.sortMode;
+                localStorage.setItem('fc-sort-mode', sortMode);
+                mexicoRenderSignature = '';
+                renderMexicoItems(true);
+            });
+        });
+
+        document.querySelector('#fc-filters-content [data-toggle-sold-out]').addEventListener('click', () => {
+            hideSoldOut = !hideSoldOut;
+            localStorage.setItem('fc-hide-sold-out', String(hideSoldOut));
+            mexicoRenderSignature = '';
+            renderMexicoItems(true);
         });
 
         updatePanel();
@@ -1414,6 +1477,8 @@
         const content = document.getElementById('fc-mexico-content');
         if (!content) return;
 
+        syncFilterControls();
+
         const items = MEXICO_ITEMS.map(getCardData);
         const travelCapacity = readTravelCapacity();
         const signature = JSON.stringify(items.map(item => [
@@ -1527,25 +1592,29 @@
 
         content.classList.toggle('fc-highlights-on', highlightingEnabled);
         content.innerHTML = `
-            <div class="fc-profit-mode" aria-label="Best-profit highlight mode">
-                <button class="fc-mode-choice ${profitMode === 'npc' ? 'active' : ''}" data-profit-mode="npc" type="button">NPC PROFIT</button>
-                <button class="fc-mode-choice ${profitMode === 'market' ? 'active' : ''}" data-profit-mode="market" type="button">PLAYER MARKET</button>
-            </div>
-            <div class="fc-sort-mode" aria-label="Item sorting order">
-                <button class="fc-mode-choice ${sortMode === 'price-high' ? 'active' : ''}" data-sort-mode="price-high" type="button">HIGHEST PRICE FIRST</button>
-                <button class="fc-mode-choice ${sortMode === 'price-low' ? 'active' : ''}" data-sort-mode="price-low" type="button">LOWEST PRICE FIRST</button>
-                <button class="fc-mode-choice ${sortMode === 'profit-high' ? 'active' : ''}" data-sort-mode="profit-high" type="button">HIGHEST PROFIT FIRST</button>
-                <button class="fc-mode-choice ${sortMode === 'profit-low' ? 'active' : ''}" data-sort-mode="profit-low" type="button">LOWEST PROFIT FIRST</button>
-                <button class="fc-mode-choice ${sortMode === 'quantity-high' ? 'active' : ''}" data-sort-mode="quantity-high" type="button">HIGHEST QUANTITY FIRST</button>
-                <button class="fc-mode-choice ${sortMode === 'quantity-low' ? 'active' : ''}" data-sort-mode="quantity-low" type="button">LOWEST QUANTITY FIRST</button>
-            </div>
-            <button class="fc-sold-out-toggle ${hideSoldOut ? 'active' : ''}" data-toggle-sold-out type="button">HIDE ALL SOLD OUT ITEMS: ${hideSoldOut ? 'ON' : 'OFF'}</button>
             <div class="fc-catalog-note">Complete Mexico catalog${hideSoldOut ? ' - sold-out items hidden' : ' - sold-out items visible'}<br>${escapeHtml(feedStatusText())}<br>${escapeHtml(priceStatusText())}<br>${travelCapacity ? `Travel capacity: ${travelCapacity.used}/${travelCapacity.total} used · ${travelCapacity.remaining} slots remaining` : 'Travel capacity: waiting for Torn capacity display'}</div>
             <button id="fc-refresh-prices" class="fc-button" type="button" ${marketPriceLoading ? 'disabled' : ''}>REFRESH MARKET PRICES</button>
-            <button id="fc-copy-diagnostics" class="fc-button" type="button">COPY DIAGNOSTIC DATA</button>
             ${cards}`;
 
         bindMexicoCardEvents(sortedItems, travelCapacity);
+    }
+
+    function syncFilterControls() {
+        const filters = document.getElementById('fc-filters-content');
+        if (!filters) return;
+
+        filters.querySelectorAll('[data-profit-mode]').forEach(button => {
+            button.classList.toggle('active', button.dataset.profitMode === profitMode);
+        });
+        filters.querySelectorAll('[data-sort-mode]').forEach(button => {
+            button.classList.toggle('active', button.dataset.sortMode === sortMode);
+        });
+
+        const soldOutButton = filters.querySelector('[data-toggle-sold-out]');
+        if (soldOutButton) {
+            soldOutButton.classList.toggle('active', hideSoldOut);
+            soldOutButton.textContent = `HIDE ALL SOLD OUT ITEMS: ${hideSoldOut ? 'ON' : 'OFF'}`;
+        }
     }
 
     function diagnosticTextForItem(item) {
@@ -1738,36 +1807,8 @@
         const content = document.getElementById('fc-mexico-content');
         if (!content) return;
 
-        const diagnosticButton = content.querySelector('#fc-copy-diagnostics');
-        diagnosticButton?.addEventListener('click', () => copyDiagnosticData(diagnosticButton));
-
         const refreshPricesButton = content.querySelector('#fc-refresh-prices');
         refreshPricesButton?.addEventListener('click', () => void refreshMarketPrices(true));
-
-        content.querySelectorAll('[data-profit-mode]').forEach(button => {
-            button.addEventListener('click', () => {
-                profitMode = button.dataset.profitMode;
-                localStorage.setItem('fc-profit-mode', profitMode);
-                mexicoRenderSignature = '';
-                renderMexicoItems(true);
-            });
-        });
-
-        content.querySelectorAll('[data-sort-mode]').forEach(button => {
-            button.addEventListener('click', () => {
-                sortMode = button.dataset.sortMode;
-                localStorage.setItem('fc-sort-mode', sortMode);
-                mexicoRenderSignature = '';
-                renderMexicoItems(true);
-            });
-        });
-
-        content.querySelector('[data-toggle-sold-out]')?.addEventListener('click', () => {
-            hideSoldOut = !hideSoldOut;
-            localStorage.setItem('fc-hide-sold-out', String(hideSoldOut));
-            mexicoRenderSignature = '';
-            renderMexicoItems(true);
-        });
 
         content.querySelectorAll('.fc-item-card').forEach(card => {
             const key = card.dataset.itemKey;
@@ -1846,6 +1887,7 @@
     }
 
     function openMexico() {
+        closeFilters();
         mexicoOpen = true;
         const panel = document.getElementById('fc-mexico-panel');
         if (panel) panel.style.display = 'block';
@@ -1857,6 +1899,18 @@
     function closeMexico() {
         mexicoOpen = false;
         const panel = document.getElementById('fc-mexico-panel');
+        if (panel) panel.style.display = 'none';
+    }
+
+    function openFilters() {
+        closeMexico();
+        const panel = document.getElementById('fc-filters-panel');
+        if (panel) panel.style.display = 'block';
+        syncFilterControls();
+    }
+
+    function closeFilters() {
+        const panel = document.getElementById('fc-filters-panel');
         if (panel) panel.style.display = 'none';
     }
 
@@ -1875,6 +1929,7 @@
     function closePanel() {
         panelOpen = false;
         mexicoOpen = false;
+        closeFilters();
         document.body.classList.remove('fc-active');
         document.getElementById('fc-panel')?.remove();
     }
