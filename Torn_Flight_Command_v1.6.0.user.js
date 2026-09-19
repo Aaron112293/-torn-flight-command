@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.7
+// @version      1.7.8
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.7';
+    const VERSION = 'v1.7.8';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -1149,7 +1149,36 @@
         recordPurchaseAttempt(item, amount, confirmation ? 'CONFIRMATION_CLICKED' : 'PURCHASE_SUBMITTED', null, {
             confirmationButton: confirmation ? controlSnapshot(confirmation) : null
         });
-        return confirmation ? 'Purchase confirmed' : 'Purchase submitted';
+
+        if (!confirmation) return 'Purchase submitted';
+
+        const finalConfirmation = await waitForValue(() => {
+            row = findNativeShopRow(item) || row;
+            if (!row || !visibleElement(row)) return null;
+
+            const text = (row.innerText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const expectedPurchase = `buy ${amount}x ${item.name.toLowerCase()} for`;
+            if (!text.includes(expectedPurchase)) return null;
+
+            return [...row.querySelectorAll('button, [role="button"], input[type="submit"]')].find(candidate => {
+                if (!visibleElement(candidate) || candidate.disabled) return false;
+                const label = (candidate.innerText || candidate.value || candidate.getAttribute('aria-label') || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                return /^yes$/i.test(label);
+            }) || null;
+        }, 2500);
+
+        finalConfirmation?.click();
+        recordPurchaseAttempt(item, amount, finalConfirmation ? 'FINAL_CONFIRMATION_CLICKED' : 'FINAL_CONFIRMATION_NOT_FOUND',
+            finalConfirmation ? null : 'Torn opened a final Yes/No purchase prompt, but its Yes button was not found.', {
+                confirmationButton: controlSnapshot(confirmation),
+                finalConfirmationButton: finalConfirmation ? controlSnapshot(finalConfirmation) : null,
+                rowControls: snapshotControls(row)
+            });
+
+        if (!finalConfirmation) throw new Error('Final Torn purchase confirmation was not found.');
+        return 'Purchase confirmed';
     }
 
     function readLiveListing(item) {
