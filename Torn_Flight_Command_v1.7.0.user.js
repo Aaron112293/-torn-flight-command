@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.8
+// @version      1.7.9
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @match        https://www.torn.com/*
+// @connect      yata.yt
 // @connect      weav3r.dev
 // @grant        none
 // ==/UserScript==
@@ -13,9 +14,9 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.8';
+    const VERSION = 'v1.7.9';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
-    const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
+    const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
     const PRICE_API_BASE = 'https://weav3r.dev/api/marketplace/';
     const PRICE_CACHE_KEY = 'fc-weav3r-market-price-cache-v1';
@@ -246,8 +247,9 @@
     }
 
     async function requestFeedJson() {
+        const requestUrl = `${FEED_URL}?fc=${Date.now()}`;
         if (typeof PDA_httpGet === 'function') {
-            const response = await PDA_httpGet(FEED_URL, {
+            const response = await PDA_httpGet(requestUrl, {
                 Accept: 'application/json'
             });
 
@@ -263,7 +265,7 @@
             return JSON.parse(responseText);
         }
 
-        const response = await fetch(FEED_URL, {
+        const response = await fetch(requestUrl, {
             method: 'GET',
             headers: { Accept: 'application/json' },
             cache: 'no-store',
