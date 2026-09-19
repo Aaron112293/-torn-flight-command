@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.9
+// @version      1.8.0
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.9';
+    const VERSION = 'v1.8.0';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -947,6 +947,14 @@
         return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
     }
 
+    function activeFormControl(element) {
+        if (!(element instanceof Element)) return false;
+        const style = getComputedStyle(element);
+        return style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && element.getAttribute('aria-hidden') !== 'true';
+    }
+
     function controlSnapshot(element) {
         const context = element.closest('li, form, [role="dialog"], [class*="modal"], [class*="dialog"]');
         return {
@@ -1060,6 +1068,7 @@
                 && candidate.type !== 'hidden'
                 && candidate.type !== 'button'
                 && candidate.type !== 'submit'
+                && activeFormControl(candidate)
             );
             const button = purchaseButtonWithin(context, item.name);
             if (input && button) return { input, button, context };
@@ -1080,14 +1089,24 @@
             rowControls: snapshotControls(row)
         });
 
-        let controls = purchaseControlsFor(item, row);
+        const itemButton = [...row.querySelectorAll('button, [role="button"]')].find(button => {
+            const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+            return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
+        });
+        const rowIsExpanded = [...row.querySelectorAll('button')].some(button =>
+            visibleElement(button)
+            && typeof button.className === 'string'
+            && /(?:^|\s)expanded___/.test(button.className)
+        );
+
+        // Torn keeps old quantity inputs mounted after a completed purchase.
+        // Re-open a collapsed row before resolving controls so a second BUY MAX
+        // cannot submit through the stale input left by the previous purchase.
+        let controls = rowIsExpanded ? purchaseControlsFor(item, row) : null;
         if (!controls) {
-            const itemButton = [...row.querySelectorAll('button, [role="button"]')].find(button => {
-                const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
-                return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
-            });
             itemButton?.click();
             recordPurchaseAttempt(item, amount, itemButton ? 'ITEM_EXPAND_CLICKED' : 'ITEM_EXPAND_CONTROL_NOT_FOUND', null, {
+                rowWasExpanded: rowIsExpanded,
                 rowControls: snapshotControls(row)
             });
 
@@ -1152,7 +1171,14 @@
             confirmationButton: confirmation ? controlSnapshot(confirmation) : null
         });
 
-        if (!confirmation) return 'Purchase submitted';
+        if (!confirmation) {
+            recordPurchaseAttempt(item, amount, 'CONFIRMATION_NOT_FOUND',
+                'Torn did not open the purchase confirmation.', {
+                    rowControls: snapshotControls(row),
+                    visibleRelevantControls: diagnosticPurchaseControls()
+                });
+            throw new Error('Torn purchase confirmation was not found. Try again.');
+        }
 
         const finalConfirmation = await waitForValue(() => {
             row = findNativeShopRow(item) || row;
