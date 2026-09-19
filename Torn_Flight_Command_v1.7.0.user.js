@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.7.3
+// @version      1.7.4
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -13,7 +13,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.7.3';
+    const VERSION = 'v1.7.4';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://torn-intel.com/api/v1/foreign-stock/travel-table';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -42,6 +42,7 @@
     let marketPriceError = '';
     let marketPriceProgress = { complete: 0, total: 0 };
     let lastMarketPriceBatch = 0;
+    let lastPurchaseAttempt = null;
 
     const CITY_TO_COUNTRY = {
         'ciudad juarez': 'Mexico',
@@ -944,6 +945,44 @@
         return style.display !== 'none' && style.visibility !== 'hidden' && box.width > 0 && box.height > 0;
     }
 
+    function controlSnapshot(element) {
+        const context = element.closest('li, form, [role="dialog"], [class*="modal"], [class*="dialog"]');
+        return {
+            tag: element.tagName,
+            className: typeof element.className === 'string' ? element.className.slice(0, 300) : '',
+            type: element.getAttribute('type'),
+            text: (element.innerText || element.value || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+            ariaLabel: element.getAttribute('aria-label'),
+            title: element.getAttribute('title'),
+            name: element.getAttribute('name'),
+            placeholder: element.getAttribute('placeholder'),
+            dataTestId: element.getAttribute('data-testid'),
+            value: 'value' in element ? String(element.value || '').slice(0, 100) : null,
+            disabled: Boolean(element.disabled),
+            contextText: (context?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 500)
+        };
+    }
+
+    function snapshotControls(context) {
+        if (!context) return [];
+        return [...context.querySelectorAll('button, [role="button"], input, select, textarea')]
+            .filter(element => !element.closest('#fc-panel, #fc-mexico-panel'))
+            .map(controlSnapshot)
+            .slice(0, 40);
+    }
+
+    function recordPurchaseAttempt(item, amount, stage, error = null, extra = {}) {
+        lastPurchaseAttempt = {
+            item: item?.name || null,
+            amount,
+            stage,
+            error,
+            recordedAt: new Date().toISOString(),
+            travelCapacity: readTravelCapacity(),
+            ...extra
+        };
+    }
+
     function findNativeShopRow(item) {
         const wanted = item.name.toLowerCase();
         const candidates = document.querySelectorAll('li, article, [data-item], [data-item-id]');
@@ -988,49 +1027,92 @@
         if (!context) return null;
         return [...context.querySelectorAll('button, [role="button"], input[type="submit"]')].find(button => {
             if (!visibleElement(button) || button.disabled || button.closest('#fc-panel, #fc-mexico-panel')) return false;
-            const text = (button.innerText || button.value || button.getAttribute('aria-label') || '')
-                .replace(/\s+/g, ' ')
-                .trim();
-            if (!text || text.toLowerCase() === itemName.toLowerCase() || /buy\s+max/i.test(text)) return false;
-            return /^(?:buy|purchase)\b/i.test(text) || button.type === 'submit';
+            const text = (button.innerText || button.value || '').replace(/\s+/g, ' ').trim();
+            const hint = [
+                text,
+                typeof button.className === 'string' ? button.className : '',
+                button.getAttribute('aria-label'),
+                button.getAttribute('title'),
+                button.getAttribute('data-testid')
+            ].filter(Boolean).join(' ');
+            if (text.toLowerCase() === itemName.toLowerCase() || /buy\s+max/i.test(hint)) return false;
+            return /\b(?:buy|purchase|cart|basket)\b/i.test(hint) || button.type === 'submit';
         }) || null;
+    }
+
+    function purchaseControlsFor(item, row) {
+        const contexts = [row];
+        document.querySelectorAll('form, [role="dialog"], [class*="modal"], [class*="dialog"]').forEach(context => {
+            if (!visibleElement(context) || context.closest('#fc-panel, #fc-mexico-panel')) return;
+            const text = (context.innerText || '').replace(/\s+/g, ' ').trim();
+            if (text.toLowerCase().includes(item.name.toLowerCase()) || /\b(?:buy|purchase|quantity)\b/i.test(text)) {
+                contexts.push(context);
+            }
+        });
+
+        for (const context of contexts.filter(Boolean)) {
+            const input = [...context.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
+                .find(candidate => visibleElement(candidate) && !candidate.disabled);
+            const button = purchaseButtonWithin(context, item.name);
+            if (input && button) return { input, button, context };
+        }
+        return null;
     }
 
     async function purchaseFromTornShop(item, amount) {
         let row = findNativeShopRow(item);
-        if (!row) throw new Error('Open the Mexico shop page before buying.');
+        recordPurchaseAttempt(item, amount, 'STARTED');
+        if (!row) {
+            recordPurchaseAttempt(item, amount, 'FAILED', 'Mexico shop row was not found.');
+            throw new Error('Open the Mexico shop page before buying.');
+        }
 
-        let input = [...row.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
-            .find(candidate => visibleElement(candidate));
-        let purchaseButton = purchaseButtonWithin(row, item.name);
+        recordPurchaseAttempt(item, amount, 'SHOP_ROW_FOUND', null, {
+            rowText: (row.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1000),
+            rowControls: snapshotControls(row)
+        });
 
-        if (!input || !purchaseButton) {
+        let controls = purchaseControlsFor(item, row);
+        if (!controls) {
             const itemButton = [...row.querySelectorAll('button, [role="button"]')].find(button => {
                 const text = (button.innerText || button.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
                 return visibleElement(button) && text.toLowerCase() === item.name.toLowerCase();
             });
             itemButton?.click();
-
-            const controls = await waitForValue(() => {
-                row = findNativeShopRow(item) || row;
-                const foundInput = [...row.querySelectorAll('input[type="number"], input[inputmode="numeric"], input[type="text"]')]
-                    .find(candidate => visibleElement(candidate));
-                const foundButton = purchaseButtonWithin(row, item.name);
-                return foundInput && foundButton ? { input: foundInput, button: foundButton } : null;
+            recordPurchaseAttempt(item, amount, itemButton ? 'ITEM_EXPAND_CLICKED' : 'ITEM_EXPAND_CONTROL_NOT_FOUND', null, {
+                rowControls: snapshotControls(row)
             });
-            input = controls?.input || null;
-            purchaseButton = controls?.button || null;
+
+            controls = await waitForValue(() => {
+                row = findNativeShopRow(item) || row;
+                return purchaseControlsFor(item, row);
+            });
         }
 
-        if (!input || !purchaseButton) {
+        if (!controls) {
+            recordPurchaseAttempt(item, amount, 'FAILED', 'Torn purchase controls were not found after expanding the item.', {
+                rowControls: snapshotControls(row),
+                visibleRelevantControls: diagnosticPurchaseControls()
+            });
             throw new Error('Torn purchase controls were not found. Expand the item and try again.');
         }
+
+        const { input, button: purchaseButton, context } = controls;
+        recordPurchaseAttempt(item, amount, 'CONTROLS_FOUND', null, {
+            input: controlSnapshot(input),
+            purchaseButton: controlSnapshot(purchaseButton),
+            contextControls: snapshotControls(context)
+        });
 
         setNativeInputValue(input, amount);
         input.focus();
         input.blur();
         await new Promise(resolve => setTimeout(resolve, 100));
         purchaseButton.click();
+        recordPurchaseAttempt(item, amount, 'PURCHASE_CLICKED', null, {
+            input: controlSnapshot(input),
+            purchaseButton: controlSnapshot(purchaseButton)
+        });
 
         const confirmation = await waitForValue(() => {
             const dialogs = [...document.querySelectorAll('[role="dialog"], [class*="modal"], [class*="dialog"]')]
@@ -1051,6 +1133,9 @@
         }, 1200);
 
         confirmation?.click();
+        recordPurchaseAttempt(item, amount, confirmation ? 'CONFIRMATION_CLICKED' : 'PURCHASE_SUBMITTED', null, {
+            confirmationButton: confirmation ? controlSnapshot(confirmation) : null
+        });
         return confirmation ? 'Purchase confirmed' : 'Purchase submitted';
     }
 
@@ -1380,6 +1465,30 @@
         return matches;
     }
 
+    function diagnosticPurchaseControls() {
+        const itemNames = MEXICO_ITEMS.map(item => item.name.toLowerCase());
+        return [...document.querySelectorAll('button, [role="button"], input, select, textarea')]
+            .filter(element => {
+                if (!visibleElement(element) || element.closest('#fc-panel, #fc-mexico-panel')) return false;
+                const hint = [
+                    element.innerText,
+                    element.value,
+                    typeof element.className === 'string' ? element.className : '',
+                    element.getAttribute('aria-label'),
+                    element.getAttribute('title'),
+                    element.getAttribute('name'),
+                    element.getAttribute('placeholder'),
+                    element.getAttribute('data-testid')
+                ].filter(Boolean).join(' ').replace(/\s+/g, ' ');
+                const context = element.closest('li, form, [role="dialog"], [class*="modal"], [class*="dialog"]');
+                const contextText = (context?.innerText || '').replace(/\s+/g, ' ').toLowerCase().slice(0, 1200);
+                return /\b(?:buy|purchase|cart|basket|max|quantity|amount)\b/i.test(hint)
+                    || itemNames.some(name => contextText.includes(name));
+            })
+            .map(controlSnapshot)
+            .slice(0, 80);
+    }
+
     function buildDiagnosticReport() {
         const pageText = document.body?.innerText || '';
         const flight = getFlightInfo();
@@ -1429,6 +1538,10 @@
                 detected: flight
             },
             travelCapacity: readTravelCapacity(),
+            purchaseAutomation: {
+                lastAttempt: lastPurchaseAttempt,
+                visibleRelevantControls: diagnosticPurchaseControls()
+            },
             foreignStockFeed: {
                 url: FEED_URL,
                 status: feedStatusText(),
@@ -1590,6 +1703,14 @@
                         renderMexicoItems(true);
                     }, 1200);
                 } catch (error) {
+                    const previousStage = lastPurchaseAttempt?.stage || null;
+                    if (previousStage !== 'FAILED') {
+                        recordPurchaseAttempt(item, amount, 'FAILED', error?.message || String(error), {
+                            previousStage,
+                            rowControls: snapshotControls(findNativeShopRow(item)),
+                            visibleRelevantControls: diagnosticPurchaseControls()
+                        });
+                    }
                     maxButton.textContent = error?.message || 'PURCHASE FAILED';
                     maxButton.disabled = false;
                 }
