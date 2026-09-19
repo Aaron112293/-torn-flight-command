@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flight Command
 // @namespace    torn.flight.command
-// @version      1.8.11
+// @version      1.8.12
 // @description  Flight Command Mexico cards with live Weav3r market profit, price/quantity/profit sorting, and foreign stock
 // @updateURL    https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
 // @downloadURL  https://raw.githubusercontent.com/Aaron112293/-torn-flight-command/main/Torn_Flight_Command_v1.7.0.user.js
@@ -14,7 +14,7 @@
 (function () {
     'use strict';
 
-    const VERSION = 'v1.8.11';
+    const VERSION = 'v1.8.12';
     const FLIGHT_STATE_KEY = 'fc-last-confirmed-flight';
     const FEED_URL = 'https://yata.yt/api/v1/travel/export/';
     const FEED_CACHE_KEY = 'fc-mexico-foreign-stock-cache-v1';
@@ -28,7 +28,8 @@
     const itemCardState = new Map();
     let mexicoRenderSignature = '';
     let highlightingEnabled = localStorage.getItem('fc-highlighting') !== 'off';
-    let profitMode = localStorage.getItem('fc-profit-mode') === 'npc' ? 'npc' : 'market';
+    const savedProfitMode = localStorage.getItem('fc-profit-mode');
+    let profitMode = ['npc', 'market', 'auto'].includes(savedProfitMode) ? savedProfitMode : 'market';
     const savedSortMode = localStorage.getItem('fc-sort-mode');
     let sortMode = ['price-high', 'price-low', 'profit-high', 'profit-low', 'quantity-high', 'quantity-low'].includes(savedSortMode)
         ? savedSortMode
@@ -758,6 +759,10 @@
                 background: rgba(0,0,0,.25);
             }
 
+            .fc-profit-mode {
+                grid-template-columns: repeat(3, 1fr);
+            }
+
             .fc-mode-choice {
                 padding: 9px 6px;
                 border: 1px solid transparent;
@@ -860,6 +865,7 @@
                     <div class="fc-profit-mode" aria-label="Best-profit highlight mode">
                         <button class="fc-mode-choice" data-profit-mode="npc" type="button">NPC PROFIT</button>
                         <button class="fc-mode-choice" data-profit-mode="market" type="button">PLAYER MARKET</button>
+                        <button class="fc-mode-choice" data-profit-mode="auto" type="button">AUTO BEST</button>
                     </div>
                     <div class="fc-sort-mode" aria-label="Item sorting order">
                         <button class="fc-mode-choice" data-sort-mode="price-high" type="button">HIGHEST PRICE FIRST</button>
@@ -1467,6 +1473,14 @@
         return `${((profit / cost) * 100).toFixed(1)}%`;
     }
 
+    function selectedProfit(item, mode = profitMode) {
+        if (mode === 'npc') return Number.isFinite(item.npcProfit) ? item.npcProfit : null;
+        if (mode === 'market') return Number.isFinite(item.playerProfit) ? item.playerProfit : null;
+
+        const profits = [item.npcProfit, item.playerProfit].filter(Number.isFinite);
+        return profits.length ? Math.max(...profits) : null;
+    }
+
     function relativeTime(unixSeconds) {
         const timestamp = Number(unixSeconds);
         if (!Number.isFinite(timestamp) || timestamp <= 0) return '-';
@@ -1515,6 +1529,7 @@
             item.soldOut,
             item.resalePrice,
             item.playerProfit,
+            item.npcProfit,
             profitMode,
             sortMode,
             hideSoldOut,
@@ -1528,25 +1543,26 @@
         if (!force && signature === mexicoRenderSignature) return;
         mexicoRenderSignature = signature;
 
-        const profitField = profitMode === 'npc' ? 'npcProfit' : 'playerProfit';
         const sortByProfit = sortMode.startsWith('profit-');
         const sortByQuantity = sortMode.startsWith('quantity-');
-        const sortField = sortByProfit ? profitField : (sortByQuantity ? 'quantity' : 'cost');
+        const sortField = sortByQuantity ? 'quantity' : 'cost';
         const descending = sortMode.endsWith('-high');
         const visibleItems = hideSoldOut ? items.filter(item => !item.soldOut) : items;
         const sortedItems = [...visibleItems].sort((left, right) => {
-            const leftComparable = Number.isFinite(left[sortField]) && (!sortByProfit || !left.soldOut);
-            const rightComparable = Number.isFinite(right[sortField]) && (!sortByProfit || !right.soldOut);
+            const leftValue = sortByProfit ? selectedProfit(left) : left[sortField];
+            const rightValue = sortByProfit ? selectedProfit(right) : right[sortField];
+            const leftComparable = Number.isFinite(leftValue) && (!sortByProfit || !left.soldOut);
+            const rightComparable = Number.isFinite(rightValue) && (!sortByProfit || !right.soldOut);
 
             if (leftComparable !== rightComparable) return leftComparable ? -1 : 1;
             if (!leftComparable) return 0;
 
-            const difference = left[sortField] - right[sortField];
+            const difference = leftValue - rightValue;
             return descending ? -difference : difference;
         });
-        const profitable = items.filter(item => !item.soldOut && Number.isFinite(item[profitField]));
+        const profitable = items.filter(item => !item.soldOut && Number.isFinite(selectedProfit(item)));
         const bestProfit = profitable.length
-            ? Math.max(...profitable.map(item => item[profitField]))
+            ? Math.max(...profitable.map(item => selectedProfit(item)))
             : null;
 
         let activeShop = '';
@@ -1569,7 +1585,7 @@
             if (displayedAmount !== state.amount) {
                 itemCardState.set(key, { ...state, amount: displayedAmount });
             }
-            const isBest = Number.isFinite(bestProfit) && item[profitField] === bestProfit;
+            const isBest = Number.isFinite(bestProfit) && selectedProfit(item) === bestProfit;
             const quantityLabel = item.soldOut
                 ? 'SOLD OUT'
                 : (Number.isFinite(item.quantity) ? item.quantity.toLocaleString('en-US') : 'Stock updates in Mexico');
@@ -1732,6 +1748,16 @@
         const highestPlayerProfit = availablePlayerItems.length
             ? Math.max(...availablePlayerItems.map(item => item.calculatedPlayerProfit))
             : null;
+        const selectedProfitForReport = item => selectedProfit({
+            npcProfit: item.calculatedNpcProfit,
+            playerProfit: item.calculatedPlayerProfit
+        });
+        const availableSelectedItems = items.filter(item =>
+            !item.detectedSoldOut && Number.isFinite(selectedProfitForReport(item))
+        );
+        const highestSelectedProfit = availableSelectedItems.length
+            ? Math.max(...availableSelectedItems.map(selectedProfitForReport))
+            : null;
 
         return JSON.stringify({
             report: 'Torn Flight Command Mexico diagnostics',
@@ -1778,6 +1804,12 @@
             highlighting: {
                 enabled: highlightingEnabled,
                 selectedMode: profitMode,
+                highestSelectedProfit,
+                itemsMarkedHighestProfit: Number.isFinite(highestSelectedProfit)
+                    ? items
+                        .filter(item => selectedProfitForReport(item) === highestSelectedProfit)
+                        .map(item => item.name)
+                    : [],
                 highestPlayerProfit,
                 itemsMarkedHighestPlayerProfit: Number.isFinite(highestPlayerProfit)
                     ? items
